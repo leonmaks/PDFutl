@@ -1,0 +1,24 @@
+/* Use the floating panel frame and backdrop for split editors. */
+.monaco-workbench .part.editor:has(> .content .pdfutl-split-editor-frame:not(.split-view-view:not(.visible) *)) {
+	border-color: transparent !important;
+}
+
+.monaco-workbench .part.editor > .content:has(.pdfutl-split-editor-frame:not(.split-view-view:not(.visible) *)) {
+	background-color: var(--modern-ui-shell-background, var(--vscode-modernUI-shellBackground, var(--vscode-titleBar-activeBackground))) !important;
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container.pdfutl-split-editor-frame {
+	box-sizing: border-box;
+	margin: var(--pdfutl-split-frame-margin);
+	width: var(--pdfutl-split-frame-width);
+	height: var(--pdfutl-split-frame-height);
+	overflow: hidden;
+	border: 1px solid var(--vscode-contrastBorder, var(--vscode-surface-border, var(--vscode-widget-border, var(--vscode-editorGroup-border))));
+	border-radius: var(--vscode-editorArea-cornerRadius, var(--vscode-cornerRadius-large));
+	background-color: var(--vscode-editor-background);
+}
+
+/* The sash remains the native resize target and paints its usual hover/drag highlight. */
+.pdfutl-editor-split-grid .monaco-split-view2.separator-border:not(.editor-group-container *) > .monaco-scrollable-element > .split-view-container > :where(.split-view-view.visible ~ .split-view-view.visible)::before {
+	content: none;
+}

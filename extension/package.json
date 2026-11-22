@@ -1,0 +1,51 @@
+{
+  "name": "pdfutl-viewer",
+  "displayName": "PDF Viewer",
+  "publisher": "pdfutl",
+  "version": "0.1.0",
+  "engines": { "vscode": "^1.105.0" },
+  "main": "./dist/host.cjs",
+  "activationEvents": ["onStartupFinished", "onCustomEditor:pdfutl.viewer"],
+  "capabilities": { "untrustedWorkspaces": { "supported": true } },
+  "contributes": {
+    "commands": [
+      { "command": "pdfutl.find", "title": "Find in PDF" },
+      { "command": "pdfutl.togglePageComments", "title": "Toggle PDF Page Comments" },
+      { "command": "pdfutl.pinFolder", "title": "Pin Folder…", "icon": "$(add)" },
+      { "command": "pdfutl.unpinFolder", "title": "Unpin Folder", "icon": "$(pinned)" },
+      { "command": "pdfutl.refreshPinnedFolders", "title": "Refresh Pinned Folders", "icon": "$(refresh)" }
+    ],
+    "views": {
+      "explorer": [
+        { "id": "pdfutl.pinnedFolders", "name": "Pinned Folders", "group": "pdfutl.pinnedFolders", "when": "workbenchState == empty" }
+      ]
+    },
+    "viewsWelcome": [
+      { "view": "pdfutl.pinnedFolders", "contents": "[Pin Folder…](command:pdfutl.pinFolder)" }
+    ],
+    "menus": {
+      "view/title": [
+        { "command": "pdfutl.pinFolder", "when": "view == pdfutl.pinnedFolders", "group": "navigation@1" },
+        { "command": "pdfutl.refreshPinnedFolders", "when": "view == pdfutl.pinnedFolders", "group": "navigation@2" }
+      ],
+      "view/item/context": [
+        { "command": "pdfutl.unpinFolder", "when": "view == pdfutl.pinnedFolders && viewItem == pdfutl.pinnedRoot", "group": "inline" }
+      ],
+      "commandPalette": [
+        { "command": "pdfutl.unpinFolder", "when": "false" }
+      ]
+    },
+    "keybindings": [
+      { "command": "pdfutl.find", "key": "ctrl+f", "when": "activeCustomEditorId == pdfutl.viewer" },
+      { "command": "pdfutl.togglePageComments", "key": "ctrl+shift+m", "when": "activeCustomEditorId == pdfutl.viewer" }
+    ],
+    "customEditors": [
+      {
+        "viewType": "pdfutl.viewer",
+        "displayName": "PDF Viewer",
+        "selector": [{ "filenamePattern": "*.pdf" }, { "filenamePattern": "*.PDF" }],
+        "priority": "default"
+      }
+    ]
+  }
+}
