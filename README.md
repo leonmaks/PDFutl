@@ -1,8 +1,12 @@
 # PDFUtl
 
-Прототип PDF-просмотрщика для Windows x64. Меню, вкладки и группы редакторов предоставляет Code-OSS. TypeScript-расширение добавляет редактор PDF на EmbedPDF 3.3.0 и локальном PDFium WebAssembly. Исполняемая среда — Electron 45.4.1. [Code-OSS](https://github.com/microsoft/vscode) · [EmbedPDF](https://github.com/embedpdf/embed-pdf-viewer) · [Electron 45.4.1](https://github.com/electron/electron/releases/tag/v45.4.1)
+PDF-просмотрщик на Code-OSS, EmbedPDF 3.3.0 и локальном PDFium WebAssembly. Исполняемая среда — Electron 45.4.1. [Code-OSS](https://github.com/microsoft/vscode) · [EmbedPDF](https://github.com/embedpdf/embed-pdf-viewer) · [Electron 45.4.1](https://github.com/electron/electron/releases/tag/v45.4.1)
 
-## Запуск
+## Portable-версия
+
+Релиз содержит архивы для Windows x64 и Linux x64. Для запуска распакуйте архив своей платформы в разрешённую пользовательскую папку. [Скачать релиз](https://github.com/leonmaks/PDFUtl/releases/tag/v0.1.0) · [Инструкция для Windows и SberOS](INSTALL.md)
+
+## Запуск из исходников
 
 Запустите из корня проекта в PowerShell.
 
@@ -41,3 +45,19 @@ npm run smoke
 `build:code-oss` загружает исходники Code-OSS `1.147.0`, переключает его нативную сборку на Electron `45.4.1` и собирает рабочую область. Для сборки нужны Node.js 24.22.1 или новее из ветки 24, pnpm, Python и MSVC v143 с библиотеками Spectre. Распакуйте официальный архив Windows x64 Electron 45.4.1 в `.upstream/electron-45.4.1` после проверки SHA-256. [Релиз Electron и контрольные суммы](https://github.com/electron/electron/releases/tag/v45.4.1) · [Требования Code-OSS](https://github.com/microsoft/vscode/wiki/How-to-Contribute)
 
 `npm run smoke` создаёт два тестовых PDF и запускает интеграционный тест в отдельном профиле. `npm run smoke -- --viewer` проверяет PDF-редактор в изолированном окне того же Electron. Скриншоты и сохранённый тестовый PDF появляются в `.smoke`.
+
+### Portable-архив из собранного Code-OSS
+
+На целевой системе соберите нативные зависимости Code-OSS для Electron 45.4.1. В корне подготовленного Code-OSS создайте сборку рабочей области.
+
+```sh
+node build/next/index.ts bundle --out out-pdfutl --target desktop --minify --mangle-privates --nls
+```
+
+В корне PDFUtl выполните `npm ci` и `npm run build`, затем укажите скрипту упаковки подготовленный Code-OSS, его сборку, проверенный официальный ZIP Electron для текущей платформы и папку результата. Для Windows скрипт использует системный `tar`, для Linux нужны `unzip` и `tar`.
+
+```sh
+node scripts/portable.mjs .upstream/code-oss .upstream/code-oss/out-pdfutl /path/to/electron.zip .upstream/portable
+```
+
+Чтобы проверить архив на целевой платформе, распакуйте его в отдельную тестовую папку и передайте путь к её исполняемому файлу команде `npm run smoke -- --portable=/path/to/pdfutl`.

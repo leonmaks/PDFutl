@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { copyFile, mkdir, mkdtemp, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { userInfo } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { _electron } from 'playwright-core';
 import { appArguments, appEnv, electron, electronVersion, root } from './code-oss.mjs';
 import { makeFixtures } from './fixtures.mjs';
@@ -17,11 +17,19 @@ const revisedComment = 'Second annotation version';
 const profileComment = 'Saved only in the PDFUtl profile';
 const originalProfileComment = 'Draft from the annotation card';
 const currentUser = userInfo().username;
-const profile = join(run, 'profile');
 const viewerOnly = process.argv.includes('--viewer');
+const portableArg = process.argv.find(arg => arg.startsWith('--portable='));
+if (portableArg && viewerOnly) throw new Error('Choose either --portable or --viewer');
+const executable = portableArg ? resolve(portableArg.slice('--portable='.length)) : electron;
+const profile = portableArg ? join(dirname(executable), 'data', 'user-data') : join(run, 'profile');
+const launchEnv = portableArg ? { ...process.env } : appEnv;
+if (portableArg) {
+  for (const key of ['ELECTRON_RUN_AS_NODE', 'VSCODE_DEV', 'VSCODE_PORTABLE']) delete launchEnv[key];
+}
+const workbenchArgs = (docs = []) => portableArg ? docs : appArguments(profile, docs);
 const args = viewerOnly
   ? [join(root, 'scripts', 'viewer-test-host.cjs'), files[0], copyPath, profile]
-  : appArguments(profile, files);
+  : workbenchArgs(files);
 let app = await launch(args);
 let workbench;
 
@@ -40,7 +48,7 @@ try {
     await app.close();
     workbench = undefined;
     await seedUntitledWorkspace();
-    app = await launch(appArguments(profile));
+    app = await launch(workbenchArgs());
     workbench = await app.firstWindow({ timeout: 60_000 });
     await verifyRestoredSession(workbench, layout);
     await verifyReadingPositions(workbench, readingPositions);
@@ -67,7 +75,7 @@ try {
 }
 
 function launch(args) {
-  return _electron.launch({ executablePath: electron, args, env: appEnv, timeout: 60_000 });
+  return _electron.launch({ executablePath: executable, args, env: launchEnv, timeout: 60_000 });
 }
 
 async function verifyWithoutWorkbench(page) {
@@ -735,7 +743,8 @@ async function verifyReadingPosition(workbench, saved) {
 async function openLegacyWorkspace() {
   const legacy = join(run, 'Legacy Project.code-workspace');
   await writeFile(legacy, JSON.stringify({ folders: [{ path: dirname(files[0]) }] }));
-  const secondary = spawn(electron, appArguments(profile, [legacy]), { env: appEnv, stdio: 'ignore' });
+  const secondaryArgs = portableArg ? ['--new-window', legacy] : workbenchArgs([legacy]);
+  const secondary = spawn(executable, secondaryArgs, { env: launchEnv, stdio: 'ignore' });
   const exited = new Promise((resolve, reject) => {
     secondary.on('error', reject);
     secondary.on('exit', code => code === 0 ? resolve() : reject(new Error(`Workspace launch exited with ${code}`)));

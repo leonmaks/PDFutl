@@ -14,24 +14,26 @@ const sourceCommit = '8a14f0cc1b08d531eb83255ea3764ae22aa932b5';
 export const appEnv = { ...process.env, VSCODE_CLI: '1', VSCODE_DEV: '1', NODE_ENV: 'development' };
 delete appEnv.ELECTRON_RUN_AS_NODE;
 
+export const defaultSettings = {
+  'workbench.editor.doubleClickTabToToggleEditorGroupSizes': 'maximize',
+  'workbench.editor.enablePreview': false,
+  'workbench.editorAssociations': { '*.pdf': 'pdfutl.viewer' },
+  'workbench.secondarySideBar.defaultVisibility': 'hidden',
+  'chat.disableAIFeatures': true,
+  'window.menuBarVisibility': 'visible',
+  'window.restoreWindows': 'all',
+  'workbench.startupEditor': 'none',
+  'telemetry.telemetryLevel': 'off',
+  'update.mode': 'none',
+  'extensions.autoUpdate': false,
+};
+
 export function profileArguments(profile) {
   const user = join(profile, 'User');
   mkdirSync(user, { recursive: true });
   const settings = join(user, 'settings.json');
   if (!existsSync(settings)) {
-    writeFileSync(settings, JSON.stringify({
-      'workbench.editor.doubleClickTabToToggleEditorGroupSizes': 'maximize',
-      'workbench.editor.enablePreview': false,
-      'workbench.editorAssociations': { '*.pdf': 'pdfutl.viewer' },
-      'workbench.secondarySideBar.defaultVisibility': 'hidden',
-      'chat.disableAIFeatures': true,
-      'window.menuBarVisibility': 'visible',
-      'window.restoreWindows': 'all',
-      'workbench.startupEditor': 'none',
-      'telemetry.telemetryLevel': 'off',
-      'update.mode': 'none',
-      'extensions.autoUpdate': false,
-    }, null, 2));
+    writeFileSync(settings, JSON.stringify(defaultSettings, null, 2));
   }
   return ['--user-data-dir', profile, '--extensions-dir', join(profile, 'extensions'), '--shared-data-dir', join(profile, 'shared-data')];
 }
