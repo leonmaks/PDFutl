@@ -121,6 +121,19 @@ async function verifyWithoutWorkbench(page) {
   console.log('An edit attributed to another user keeps its editor in a newly exported PDF');
 }
 
+async function chooseMenubarAction(workbench, menu, label) {
+  const button = workbench.locator(`.menubar > .menubar-menu-button[aria-label="${menu}"]`);
+  const dropdown = button.locator(':scope > .monaco-menu-container');
+  await workbench.locator('.menubar-menu-button.open').waitFor({ state: 'hidden' });
+  await button.locator('.menubar-menu-title').click();
+  const action = dropdown.getByText(label, { exact: true });
+  await action.waitFor();
+  // Code-OSS enables mouse-up actions after the menu opens.
+  await workbench.waitForTimeout(120);
+  await action.click();
+  await dropdown.waitFor({ state: 'hidden' });
+}
+
 async function verifyPdfMenus(workbench, frame) {
   await waitForImage(frame.locator('[data-pdf-page="1"]'));
   const menuButtons = workbench.locator('.menubar > .menubar-menu-button');
@@ -128,18 +141,7 @@ async function verifyPdfMenus(workbench, frame) {
     .map(button => button.getAttribute('aria-label')).filter(label => label && label !== 'More'));
   assert.deepEqual(headings, ['File', 'Edit', 'View', 'Go', 'Annotations', 'Help']);
 
-  async function choose(menu, label) {
-    const button = workbench.locator(`.menubar > .menubar-menu-button[aria-label="${menu}"]`);
-    const dropdown = button.locator(':scope > .monaco-menu-container');
-    await workbench.locator('.menubar-menu-button.open').waitFor({ state: 'hidden' });
-    await button.locator('.menubar-menu-title').click();
-    const action = dropdown.getByText(label, { exact: true });
-    await action.waitFor();
-    // Code-OSS enables mouse-up actions after the menu opens.
-    await workbench.waitForTimeout(120);
-    await action.click();
-    await dropdown.waitFor({ state: 'hidden' });
-  }
+  const choose = (menu, label) => chooseMenubarAction(workbench, menu, label);
 
   const input = frame.getByRole('searchbox', { name: 'Find text' });
   const pin = frame.getByRole('button', { name: 'Pin search panel' });
@@ -308,8 +310,7 @@ async function verifyWithWorkbench(workbench) {
     'Split panes, tab switches and PDF navigation do not create extra openings');
   assert.equal(await frame.getByRole('button', { name: 'Save PDF copy' }).count(), 0);
   const versions = timeline.getByRole('treeitem', { name: /review-copy\.pdf/ });
-  await workbench.getByRole('menubar').getByRole('menuitem', { name: 'File' }).click();
-  await workbench.getByRole('menuitem', { name: /^Save As/ }).click();
+  await chooseMenubarAction(workbench, 'File', 'Save As...');
   await expectSavedPdf(frame);
   await revealTimelineItem(timeline, versions.filter({ has: workbench.getByText(`v1 · ${currentUser}`, { exact: true }) }));
   await openPdfTools(frame);
@@ -323,8 +324,7 @@ async function verifyWithWorkbench(workbench) {
   await verifyTimelineTimestamp(workbench, timeline, versions);
   console.log('Timeline updates after each save, including an overwrite of the exported PDF');
   await verifyAnnotationEvents(workbench, frame, timeline);
-  await workbench.getByRole('menubar').getByRole('menuitem', { name: 'File' }).click();
-  await workbench.getByRole('menuitem', { name: /Open File/ }).first().click();
+  await chooseMenubarAction(workbench, 'File', 'Open File...');
   await tab(basename(copyPath)).first().waitFor();
   await checkReopenedCopy(await pdfFrame(workbench, basename(copyPath)));
   await (await pdfFrame(workbench, basename(copyPath))).getByText(revisedComment, { exact: true }).waitFor();
@@ -484,8 +484,7 @@ async function verifyAnnotationUndo(workbench) {
     await card.getByRole('button', { name: 'Save comment' }).click();
     await card.getByText(revised, { exact: true }).waitFor();
 
-    await workbench.getByRole('menubar').getByRole('menuitem', { name: 'Edit', exact: true }).click();
-    await workbench.getByRole('menuitem', { name: /^Undo\b/ }).click();
+    await chooseMenubarAction(workbench, 'Edit', 'Undo');
     await revealTimelineItem(timeline, event(`Undo · Comment edited · ${revised}`));
     const comments = await openPageComments(frame);
     await comments.getByText(original, { exact: true }).waitFor();
