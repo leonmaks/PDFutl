@@ -11,6 +11,11 @@ export type PdfAnnotationActivity = { readonly fragment: PdfFragment } & (
   | { readonly kind: 'highlight' }
 );
 
+export interface PdfAnnotationUndo {
+  readonly kind: 'undo';
+  readonly operationId: string;
+}
+
 type Point = { x: number; y: number };
 type HighlightQuad = { upperLeft: Point; upperRight: Point; lowerLeft: Point; lowerRight: Point };
 
@@ -61,6 +66,16 @@ export function isPdfAnnotationActivity(value: unknown): value is PdfAnnotationA
   return isPdfFragment(activity.fragment) && (activity.kind === 'highlight' ||
     ((activity.kind === 'comment' || activity.kind === 'commentEdited') &&
       typeof activity.comment === 'string' && activity.comment.trim().length > 0));
+}
+
+export function isPdfAnnotationId(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
+}
+
+export function isPdfAnnotationUndo(value: unknown): value is PdfAnnotationUndo {
+  if (!value || typeof value !== 'object') return false;
+  const undo = value as Partial<PdfAnnotationUndo>;
+  return undo.kind === 'undo' && isPdfAnnotationId(undo.operationId);
 }
 
 export function isSavedPdfHighlight(value: unknown): value is SavedPdfHighlight {

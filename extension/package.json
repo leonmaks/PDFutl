@@ -2,14 +2,29 @@
   "name": "pdfutl-viewer",
   "displayName": "PDF Viewer",
   "publisher": "pdfutl",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "engines": { "vscode": "^1.105.0" },
   "main": "./dist/host.cjs",
   "activationEvents": ["onStartupFinished", "onCustomEditor:pdfutl.viewer"],
   "capabilities": { "untrustedWorkspaces": { "supported": true } },
   "contributes": {
+    "themes": [
+      { "id": "PDFUtl Darcula", "label": "Darcula", "uiTheme": "vs-dark", "path": "./dist/themes/darcula.json" }
+    ],
+    "configurationDefaults": {
+      "workbench.colorTheme": "PDFUtl Darcula"
+    },
     "commands": [
       { "command": "pdfutl.find", "title": "Find in PDF" },
+      { "command": "pdfutl.findNext", "title": "Find Next in PDF", "enablement": "activeCustomEditorId == pdfutl.viewer" },
+      { "command": "pdfutl.findPrevious", "title": "Find Previous in PDF", "enablement": "activeCustomEditorId == pdfutl.viewer" },
+      { "command": "pdfutl.goToPage", "title": "Go to PDF Page…", "enablement": "activeCustomEditorId == pdfutl.viewer" },
+      { "command": "pdfutl.zoomIn", "title": "PDF Zoom In", "enablement": "activeCustomEditorId == pdfutl.viewer" },
+      { "command": "pdfutl.zoomOut", "title": "PDF Zoom Out", "enablement": "activeCustomEditorId == pdfutl.viewer" },
+      { "command": "pdfutl.actualSize", "title": "PDF Actual Size (100%)", "enablement": "activeCustomEditorId == pdfutl.viewer" },
+      { "command": "pdfutl.fitPage", "title": "Fit PDF Page", "enablement": "activeCustomEditorId == pdfutl.viewer" },
+      { "command": "pdfutl.addComment", "title": "Add PDF Comment", "enablement": "activeCustomEditorId == pdfutl.viewer" },
+      { "command": "pdfutl.highlightSelection", "title": "Highlight PDF Selection", "enablement": "activeCustomEditorId == pdfutl.viewer" },
       { "command": "pdfutl.togglePageComments", "title": "Toggle PDF Page Comments" },
       { "command": "pdfutl.pinFolder", "title": "Pin Folder…", "icon": "$(add)" },
       { "command": "pdfutl.unpinFolder", "title": "Unpin Folder", "icon": "$(pinned)" },
@@ -37,6 +52,7 @@
     },
     "keybindings": [
       { "command": "pdfutl.find", "key": "ctrl+f", "when": "activeCustomEditorId == pdfutl.viewer" },
+      { "command": "pdfutl.goToPage", "key": "ctrl+g", "when": "activeCustomEditorId == pdfutl.viewer" },
       { "command": "pdfutl.togglePageComments", "key": "ctrl+shift+m", "when": "activeCustomEditorId == pdfutl.viewer" }
     ],
     "customEditors": [

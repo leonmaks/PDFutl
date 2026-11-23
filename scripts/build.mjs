@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module';
-import { copyFile, mkdir } from 'node:fs/promises';
+import { copyFile, cp, mkdir } from 'node:fs/promises';
 import { build } from 'esbuild';
 import { join } from 'node:path';
 import { root } from './code-oss.mjs';
@@ -22,4 +22,5 @@ await Promise.all([
   }),
   copyFile(require.resolve('@embedpdf/engine/workers/embedpdf-worker.js'), join(dist, 'pdf-worker.js')),
   copyFile(join(root, 'node_modules', '@embedpdf', 'engine-runtime-wasm32', 'lib', 'embedpdf.wasm'), join(dist, 'pdfium.wasm')),
+  cp(join(root, 'extension', 'themes'), join(dist, 'themes'), { recursive: true }),
 ]);

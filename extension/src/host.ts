@@ -2,10 +2,10 @@ import { createHash, randomBytes } from 'node:crypto';
 import { userInfo } from 'node:os';
 import { basename } from 'node:path';
 import * as vscode from 'vscode';
-import { isPdfAnnotationActivity, isPdfFragment, isPdfReadingPosition, isSavedPdfCommentEdit, isSavedPdfHighlight, openAnnotationActivityCommand, type PdfFragment } from './pdfAnnotationActivity';
+import { isPdfAnnotationActivity, isPdfAnnotationId, isPdfAnnotationUndo, isPdfFragment, isPdfReadingPosition, isSavedPdfCommentEdit, isSavedPdfHighlight, openAnnotationActivityCommand, type PdfFragment } from './pdfAnnotationActivity';
 import { PdfHistory, samePdfFile } from './pdfHistory';
 import { registerPinnedFolders } from './pinnedFolders';
-import type { HostMessage, ViewerMessage } from './protocol';
+import type { HostMessage, PdfViewCommand, ViewerMessage } from './protocol';
 
 const pendingHistoryWrites = new Set<Promise<void>>();
 
@@ -37,11 +37,11 @@ class PdfViewer implements vscode.CustomReadonlyEditorProvider {
     return { uri, dispose() {} };
   }
 
-  sendToActiveView(type: 'focusFind' | 'togglePageComments'): void {
-    const panel = [...this.panels.keys()].find(candidate => candidate.active);
+  sendToActiveView(message: PdfViewCommand): void {
+    const panel = [...this.panels].find(([candidate, view]) => candidate.active && view.loaded)?.[0];
     if (!panel) return;
-    panel.reveal(undefined, false);
-    void panel.webview.postMessage({ type } satisfies HostMessage);
+    if (message.type !== 'undoAnnotation') panel.reveal(undefined, false);
+    void panel.webview.postMessage(message);
   }
 
   async saveAs(uri: vscode.Uri, viewColumn: number): Promise<boolean> {
@@ -138,7 +138,7 @@ class PdfViewer implements vscode.CustomReadonlyEditorProvider {
     return false;
   }
 
-  resolveCustomEditor(document: vscode.CustomDocument, panel: vscode.WebviewPanel): void {
+  resolveCustomEditor(document: vscode.CustomDocument, panel: vscode.WebviewPanel & { pdfutlExplicitOpen?: boolean }): void {
     const documentView = { uri: document.uri, loaded: false };
     this.panels.set(panel, documentView);
     const viewListener = panel.onDidChangeViewState(() => this.deliverFragment());
@@ -150,6 +150,7 @@ class PdfViewer implements vscode.CustomReadonlyEditorProvider {
     const post = (message: HostMessage) => webview.postMessage(message);
     const name = basename(document.uri.path);
     let revision: string | undefined;
+    let recordOpen = panel.pdfutlExplicitOpen === true;
     const listener = webview.onDidReceiveMessage(async (message: ViewerMessage) => {
       try {
         switch (message.type) {
@@ -168,24 +169,42 @@ class PdfViewer implements vscode.CustomReadonlyEditorProvider {
             break;
           }
           case 'opened':
-            if (!documentView.loaded) {
+            if (revision && !documentView.loaded) {
               documentView.loaded = true;
+              if (recordOpen) {
+                recordOpen = false;
+                void trackHistoryWrite(this.history.recordOpen(document.uri)).catch(error => console.error('PDF opening history:', error));
+              }
               this.deliverFragment();
             }
             break;
+          case 'toggleFullscreen':
+          case 'exitFullscreen':
+            if (panel.active) await vscode.commands.executeCommand(message.type === 'toggleFullscreen'
+              ? 'workbench.action.toggleFullScreen' : 'pdfutl.exitFullscreen');
+            break;
           case 'annotationSaved': {
-            const highlights = Array.isArray(message.highlights) && message.highlights.length > 0 &&
-              message.highlights.every(isSavedPdfHighlight) ? message.highlights : undefined;
-            const edit = message.commentEdit && { ...message.commentEdit, editor: this.history.user };
-            const commentEdit = isSavedPdfCommentEdit(edit) ? edit : undefined;
-            if (revision && isPdfAnnotationActivity(message.activity) && (highlights || commentEdit)) {
-              try {
-                await trackHistoryWrite(this.history.recordAnnotation(document.uri, revision, message.activity, highlights, commentEdit));
-              } catch (error) {
-                console.error('PDF annotation save:', error);
-                await post({ type: 'annotationSaveError', message: 'Could not save this annotation in the PDFUtl profile.' });
+            if (!isPdfAnnotationId(message.id)) break;
+            try {
+              if (!revision || !documentView.loaded) throw new Error('The PDF revision is unavailable.');
+              const { activity, id } = message;
+              if (isPdfAnnotationUndo(activity)) {
+                await trackHistoryWrite(this.history.recordAnnotation(document.uri, revision, id, activity));
+              } else {
+                const highlights = Array.isArray(message.highlights) && message.highlights.length > 0 &&
+                  message.highlights.every(isSavedPdfHighlight) ? message.highlights : undefined;
+                const edit = message.commentEdit && { ...message.commentEdit, editor: this.history.user };
+                const commentEdit = isSavedPdfCommentEdit(edit) ? edit : undefined;
+                if (!isPdfAnnotationActivity(activity) || (!highlights && !commentEdit)) throw new Error('Invalid annotation change.');
+                await trackHistoryWrite(this.history.recordAnnotation(document.uri, revision, id, activity, highlights, commentEdit,
+                  message.updatesHighlight === true ? true : undefined));
               }
+            } catch (error) {
+              console.error('PDF annotation save:', error);
+              await post({ type: 'annotationSaveResult', id: message.id, error: 'Could not save this change in the PDFUtl profile.' });
+              break;
             }
+            await post({ type: 'annotationSaveResult', id: message.id });
             break;
           }
           case 'readingPosition':
@@ -230,10 +249,24 @@ export function activate(context: vscode.ExtensionContext): void {
   registerPinnedFolders(context);
   const history = new PdfHistory(context.globalStorageUri, currentUserName());
   const provider = new PdfViewer(context.extensionUri, history);
+  const viewCommands: Record<string, PdfViewCommand> = {
+    find: { type: 'focusFind' },
+    findNext: { type: 'moveSearch', direction: 1 },
+    findPrevious: { type: 'moveSearch', direction: -1 },
+    goToPage: { type: 'focusPageNumber' },
+    zoomIn: { type: 'zoomPdf', action: 'in' },
+    zoomOut: { type: 'zoomPdf', action: 'out' },
+    actualSize: { type: 'zoomPdf', action: 'actualSize' },
+    fitPage: { type: 'zoomPdf', action: 'fitPage' },
+    addComment: { type: 'addComment' },
+    highlightSelection: { type: 'highlightSelection' },
+    togglePageComments: { type: 'togglePageComments' },
+    undoAnnotation: { type: 'undoAnnotation' },
+  };
   context.subscriptions.push(
     history,
-    vscode.commands.registerCommand('pdfutl.find', () => provider.sendToActiveView('focusFind')),
-    vscode.commands.registerCommand('pdfutl.togglePageComments', () => provider.sendToActiveView('togglePageComments')),
+    ...Object.entries(viewCommands).map(([command, message]) =>
+      vscode.commands.registerCommand(`pdfutl.${command}`, () => provider.sendToActiveView(message))),
     vscode.commands.registerCommand('pdfutl.saveAs', (uri: unknown, viewColumn: unknown) => {
       if (uri instanceof vscode.Uri && typeof viewColumn === 'number') return provider.saveAs(uri, viewColumn);
       return false;

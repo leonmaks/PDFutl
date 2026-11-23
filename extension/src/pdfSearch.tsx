@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode, type Ref } from 'react';
+import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type Ref } from 'react';
 import { StageToken } from '@embedpdf/plugin-stage/contract/host';
 import { useCapability } from '@embedpdf/react/runtime';
 import { useSearch, useSearchHits, useSearchState, type SearchHit } from '@embedpdf/react/search';
@@ -7,13 +7,14 @@ import { CommentIcon } from './pdfAnnotations';
 
 const showDelay = 200;
 const hideDelay = 350;
+const panelMargin = 4;
 // With an explicit alignment object, EmbedPDF reveals the match within the padded viewport.
 const revealInPaddedView = { align: {} };
 const keepCurrentView = { align: { x: 'keep', y: 'keep' } } as const;
 
 type SearchStep = 'enter' | 1 | -1;
 type SearchRun = { running: boolean; revealed: boolean; moves: SearchStep[] };
-type IconName = 'chevron' | 'previous' | 'next' | 'pin' | 'options' | 'minus' | 'plus' | 'fitPage';
+type IconName = 'chevron' | 'previous' | 'next' | 'pin' | 'options' | 'minus' | 'plus' | 'fitPage' | 'move';
 type SearchPopup = 'matches' | 'options';
 type ViewportRect = { x: number; y: number; width: number; height: number };
 
@@ -25,7 +26,7 @@ function overlaps(a: ViewportRect, b: ViewportRect) {
   return overlapsHorizontally(a, b) && a.y < b.y + b.height && b.y < a.y + a.height;
 }
 
-export type PdfSearchHandle = { open(): void; toggleComments(): void };
+export type PdfSearchHandle = { open(): void; move(direction: 1 | -1): void; toggleComments(): void };
 
 function SearchIcon({ name }: { name: IconName }) {
   const paths = {
@@ -37,6 +38,7 @@ function SearchIcon({ name }: { name: IconName }) {
     minus: 'M4 8h8',
     plus: 'M4 8h8M8 4v8',
     fitPage: 'M2 6V2h4m4 0h4v4m0 4v4h-4m-4 0H2v-4M6 5h4v6H6z',
+    move: 'M8 1v14M1 8h14M6 3l2-2 2 2m-4 10 2 2 2-2M3 6 1 8l2 2m10-4 2 2-2 2',
   };
   return <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
     strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -71,8 +73,8 @@ function ZoomControls() {
   </div>;
 }
 
-export function PdfSearch({ ref, children, pageComments, onToggleComments, onCloseComments }: {
-  ref: Ref<PdfSearchHandle>; children: ReactNode;
+export function PdfSearch({ ref, children, fullscreen, pageComments, onToggleComments, onCloseComments }: {
+  ref: Ref<PdfSearchHandle>; children: ReactNode; fullscreen: boolean;
   pageComments?: ReactNode; onToggleComments: () => void; onCloseComments: () => void;
 }) {
   const search = useSearch();
@@ -89,9 +91,14 @@ export function PdfSearch({ ref, children, pageComments, onToggleComments, onClo
   const optionsButton = useRef<HTMLButtonElement>(null);
   const optionsCard = useRef<HTMLDivElement>(null);
   const currentResult = useRef<HTMLButtonElement>(null);
-  const matchPadding = useRef<{ top: number; release: () => void } | undefined>(undefined);
+  const matchPadding = useRef<{ side: 'top' | 'bottom'; size: number; release: () => void } | undefined>(undefined);
   const hovered = useRef(false);
   const hoverTimer = useRef<number | undefined>(undefined);
+  const fullscreenShow = useRef<number | undefined>(undefined);
+  const fullscreenHide = useRef<number | undefined>(undefined);
+  const previousMode = useRef(fullscreen);
+  const position = useRef<{ x: number; y: number } | undefined>(undefined);
+  const drag = useRef<{ id: number; x: number; y: number } | undefined>(undefined);
   const navigation = useRef<SearchRun>({ running: false, revealed: false, moves: [] });
   const [visible, setVisible] = useState(false);
   const [pinned, setPinned] = useState(false);
@@ -146,16 +153,19 @@ export function PdfSearch({ ref, children, pageComments, onToggleComments, onClo
     const after = stage.pageRectToViewport(hit.page, bounds);
     if (!after || !isCovered(after)) return;
     const overlappingColumns = obstacles.filter(obstacle => overlapsHorizontally(after, obstacle));
-    const top = Math.ceil(Math.max(...overlappingColumns.map(obstacle => obstacle.y + obstacle.height))) + 8;
-    if (matchPadding.current?.top !== top) {
+    const above = Math.min(...overlappingColumns.map(obstacle => obstacle.y));
+    const below = Math.max(...overlappingColumns.map(obstacle => obstacle.y + obstacle.height));
+    const side = preview.current?.dataset.fullscreen === 'true' && above > viewport.height - below ? 'bottom' : 'top';
+    const size = Math.ceil(side === 'top' ? below : viewport.height - above) + 8;
+    if (matchPadding.current?.side !== side || matchPadding.current.size !== size) {
       clearMatchPadding();
       const padding = stage.getSettings().padding;
       const sides = typeof padding === 'number' ? { top: padding, right: padding, bottom: padding, left: padding } : padding;
       matchPadding.current = {
-        top,
+        side, size,
         release: stage.lockSettings({
           by: 'pdfutl.search',
-          settings: { padding: { ...sides, top: Math.max(sides.top, top) } },
+          settings: { padding: { ...sides, [side]: Math.max(sides[side], size) } },
         }),
       };
     }
@@ -222,8 +232,11 @@ export function PdfSearch({ ref, children, pageComments, onToggleComments, onClo
         if (matchPadding.current !== padding) return;
         const { scrollTop, scrollHeight, clientHeight } = stage.getScrollMetrics();
         const original = stage.getViewState().padding;
-        const extraTop = padding.top - (typeof original === 'number' ? original : original.top);
-        if (scrollTop >= extraTop && scrollTop < scrollHeight - clientHeight) clearMatchPadding();
+        const extra = padding.size - (typeof original === 'number' ? original : original[padding.side]);
+        const maxScroll = scrollHeight - clientHeight;
+        if (padding.side === 'top' ? scrollTop >= extra && scrollTop < maxScroll : scrollTop > 0 && maxScroll - scrollTop >= extra) {
+          clearMatchPadding();
+        }
       });
     });
     const onZoomChanged = stage.onSettingsChanged(({ changedKeys }) => {
@@ -253,36 +266,82 @@ export function PdfSearch({ ref, children, pageComments, onToggleComments, onClo
     else if (bounds.bottom > bottom) list.scrollTop += bounds.bottom - bottom;
   }, [active, hits, resultsOpen, visible]);
 
-  useEffect(() => () => window.clearTimeout(hoverTimer.current), []);
+  const clearVisibilityTimers = useCallback(() => {
+    window.clearTimeout(hoverTimer.current);
+    window.clearTimeout(fullscreenShow.current);
+    window.clearTimeout(fullscreenHide.current);
+    fullscreenShow.current = undefined;
+  }, []);
+
+  const hide = useCallback(() => {
+    setVisible(false);
+    setPopup(null);
+    if (overlay.current?.contains(document.activeElement)) preview.current?.focus({ preventScroll: true });
+  }, []);
+
+  useEffect(() => clearVisibilityTimers, [clearVisibilityTimers]);
+
+  useLayoutEffect(() => {
+    if (previousMode.current === fullscreen) return;
+    previousMode.current = fullscreen;
+    clearVisibilityTimers();
+    hovered.current = false;
+    drag.current = undefined;
+    if (!pinned) hide();
+  }, [clearVisibilityTimers, fullscreen, hide, pinned]);
+
+  const measurePanel = useCallback(() => {
+    const panel = overlay.current;
+    const viewport = preview.current;
+    if (!panel || !viewport) return;
+    if (fullscreen && position.current) {
+      const maxX = Math.max(panelMargin, viewport.clientWidth - panel.offsetWidth - panelMargin);
+      const maxY = Math.max(panelMargin, viewport.clientHeight - panel.offsetHeight - panelMargin);
+      panel.style.left = `${Math.min(maxX, Math.max(panelMargin, position.current.x))}px`;
+      panel.style.top = `${Math.min(maxY, Math.max(panelMargin, position.current.y))}px`;
+    } else {
+      panel.style.removeProperty('left');
+      panel.style.removeProperty('top');
+    }
+    toolbarBottom.current = panel.offsetTop + panel.offsetHeight;
+    viewport.style.setProperty('--pdf-tools-bottom', `${toolbarBottom.current}px`);
+    if (fullscreen) {
+      const above = panel.offsetTop - panelMargin;
+      const below = viewport.clientHeight - toolbarBottom.current - panelMargin;
+      panel.dataset.popupAbove = String(above > below);
+      panel.style.setProperty('--pdf-toolbar-height', `${panel.offsetHeight}px`);
+      panel.style.setProperty('--pdf-popup-space', `${Math.max(24, Math.max(above, below) - 9)}px`);
+    }
+  }, [fullscreen]);
 
   useLayoutEffect(() => {
     const panel = overlay.current;
     const viewport = preview.current;
     if (!panel || !viewport) return;
-    function measure() {
-      if (!panel || !viewport) return;
-      toolbarBottom.current = panel.offsetTop + panel.offsetHeight;
-      viewport.style.setProperty('--pdf-tools-bottom', `${toolbarBottom.current}px`);
-    }
-    measure();
-    const observer = new ResizeObserver(measure);
+    measurePanel();
+    const observer = new ResizeObserver(measurePanel);
     observer.observe(panel, { box: 'border-box' });
+    observer.observe(viewport);
     return () => observer.disconnect();
-  }, []);
+  }, [measurePanel]);
 
   const open = useCallback(() => {
-    window.clearTimeout(hoverTimer.current);
+    clearVisibilityTimers();
     onCloseComments();
     setPinned(true);
     setVisible(true);
     requestFocus(count => count + 1);
-  }, [onCloseComments]);
+  }, [clearVisibilityTimers, onCloseComments]);
 
   const toggleComments = useCallback(() => {
     setPopup(null);
     onToggleComments();
   }, [onToggleComments]);
-  useImperativeHandle(ref, () => ({ open, toggleComments }), [open, toggleComments]);
+  useImperativeHandle(ref, () => ({
+    open,
+    move: direction => query ? move(direction) : open(),
+    toggleComments,
+  }), [move, open, query, toggleComments]);
 
   function togglePopup(next: SearchPopup) {
     onCloseComments();
@@ -292,7 +351,12 @@ export function PdfSearch({ ref, children, pageComments, onToggleComments, onClo
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (event.defaultPrevented || event.isComposing) return;
-      if (event.code === 'KeyF' && event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey) {
+      if (event.key === 'Escape' && visible && resultsOpen) {
+        event.preventDefault();
+        event.stopPropagation();
+        setPopup(null);
+        if (overlay.current?.contains(document.activeElement)) field.current?.focus({ preventScroll: true });
+      } else if (event.code === 'KeyF' && event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey) {
         event.preventDefault();
         event.stopPropagation();
         open();
@@ -300,25 +364,19 @@ export function PdfSearch({ ref, children, pageComments, onToggleComments, onClo
         event.preventDefault();
         event.stopPropagation();
         if (!event.repeat) toggleComments();
-      } else if (event.key === 'F3' && visible) {
+      } else if (event.key === 'F3' && (visible || fullscreen)) {
         event.preventDefault();
         move(event.shiftKey ? -1 : 1);
       }
     }
     window.addEventListener('keydown', onKeyDown, true);
     return () => window.removeEventListener('keydown', onKeyDown, true);
-  }, [open, move, toggleComments, visible]);
+  }, [fullscreen, open, move, resultsOpen, toggleComments, visible]);
 
   function scheduleVisibility(show: boolean, keepOpen = pinned) {
     window.clearTimeout(hoverTimer.current);
     if (keepOpen || show === visible) return;
-    hoverTimer.current = window.setTimeout(() => {
-      setVisible(show);
-      if (!show) {
-        setPopup(null);
-        if (overlay.current?.contains(document.activeElement)) preview.current?.focus({ preventScroll: true });
-      }
-    }, show ? showDelay : hideDelay);
+    hoverTimer.current = window.setTimeout(show ? () => setVisible(true) : hide, show ? showDelay : hideDelay);
   }
 
   function updateHover(inside: boolean) {
@@ -327,13 +385,75 @@ export function PdfSearch({ ref, children, pageComments, onToggleComments, onClo
     scheduleVisibility(inside);
   }
 
-  return <div className="preview" ref={preview} tabIndex={-1} onPointerDown={event => {
+  const fullscreenActivity = useCallback((inside: boolean) => {
+    hovered.current = inside;
+    window.clearTimeout(fullscreenHide.current);
+    if (pinned || drag.current) return;
+    if (visible) {
+      if (!inside) fullscreenHide.current = window.setTimeout(hide, hideDelay);
+    } else if (fullscreenShow.current === undefined) {
+      fullscreenShow.current = window.setTimeout(() => {
+        fullscreenShow.current = undefined;
+        setVisible(true);
+        if (!hovered.current) fullscreenHide.current = window.setTimeout(hide, hideDelay);
+      }, showDelay);
+    }
+  }, [hide, pinned, visible]);
+
+  useLayoutEffect(() => {
+    if (!fullscreen) return;
+    function onActivity(event: PointerEvent) {
+      if (event.pointerType === 'mouse') {
+        fullscreenActivity(event.target instanceof Node && !!overlay.current?.contains(event.target));
+      }
+    }
+    window.addEventListener('pointermove', onActivity, true);
+    window.addEventListener('pointerdown', onActivity, true);
+    return () => {
+      window.removeEventListener('pointermove', onActivity, true);
+      window.removeEventListener('pointerdown', onActivity, true);
+    };
+  }, [fullscreen, fullscreenActivity]);
+
+  function startDrag(event: ReactPointerEvent<HTMLButtonElement>) {
+    const panel = overlay.current;
+    if (!panel || event.button !== 0) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const bounds = panel.getBoundingClientRect();
+    drag.current = { id: event.pointerId, x: event.clientX - bounds.left, y: event.clientY - bounds.top };
+    clearVisibilityTimers();
+  }
+
+  function movePanel(x: number, y: number) {
+    position.current = { x, y };
+    measurePanel();
+  }
+
+  function moveDrag(event: ReactPointerEvent<HTMLButtonElement>) {
+    const current = drag.current;
+    const viewport = preview.current?.getBoundingClientRect();
+    if (!viewport || current?.id !== event.pointerId) return;
+    movePanel(event.clientX - viewport.left - current.x, event.clientY - viewport.top - current.y);
+  }
+
+  function finishDrag(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (drag.current?.id !== event.pointerId) return;
+    drag.current = undefined;
+    fullscreenActivity(!!overlay.current?.contains(document.elementFromPoint(event.clientX, event.clientY)));
+  }
+
+  return <div className="preview" ref={preview} tabIndex={-1} data-fullscreen={fullscreen} onPointerDown={event => {
     if (optionsOpen && !optionsButton.current?.parentElement?.contains(event.target as Node)) setPopup(null);
   }} onPointerMoveCapture={event => {
-    if (event.pointerType !== 'mouse') return;
+    if (fullscreen || event.pointerType !== 'mouse') return;
+    const overPanel = !!overlay.current?.contains(event.target as Node);
     const bounds = event.currentTarget.getBoundingClientRect();
-    updateHover(event.clientY < bounds.top + toolbarBottom.current || !!overlay.current?.contains(event.target as Node));
-  }} onPointerLeave={() => updateHover(false)}>
+    updateHover(event.clientY < bounds.top + toolbarBottom.current || overPanel);
+  }} onPointerLeave={() => {
+    if (!fullscreen) updateHover(false);
+    else if (visible) fullscreenActivity(false);
+  }}>
     {children}
     <section className="search-overlay" ref={overlay} aria-label="PDF search and zoom"
       data-visible={visible} inert={!visible} onMouseDown={event => {
@@ -348,13 +468,20 @@ export function PdfSearch({ ref, children, pageComments, onToggleComments, onClo
         if (optionsOpen) {
           setPopup(null);
           optionsButton.current?.focus({ preventScroll: true });
-        } else if (resultsOpen) {
-          setPopup(null);
-          field.current?.focus({ preventScroll: true });
         } else {
           preview.current?.focus({ preventScroll: true });
         }
       }}>
+      {fullscreen && <button type="button" className="search-icon search-move" aria-label="Move PDF toolbar" title="Move PDF toolbar"
+        onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={finishDrag} onLostPointerCapture={finishDrag}
+        onKeyDown={event => {
+          const offsets = { ArrowLeft: [-12, 0], ArrowRight: [12, 0], ArrowUp: [0, -12], ArrowDown: [0, 12] };
+          const delta = offsets[event.key as keyof typeof offsets];
+          const panel = overlay.current;
+          if (!delta || !panel) return;
+          event.preventDefault();
+          movePanel(panel.offsetLeft + delta[0], panel.offsetTop + delta[1]);
+        }}><SearchIcon name="move" /></button>}
       <div className="search-field">
         <input ref={field} type="search" aria-label="Find text" placeholder="Find in PDF" value={query}
           onFocus={onCloseComments} onChange={event => setQuery(event.target.value)} onKeyDown={event => {
@@ -394,8 +521,11 @@ export function PdfSearch({ ref, children, pageComments, onToggleComments, onClo
       <button className="search-icon search-pin" aria-label="Pin search panel" aria-pressed={pinned}
         title={pinned ? 'Unpin search panel' : 'Pin search panel'} onClick={() => {
           setPinned(!pinned);
-          if (pinned && !hovered.current) scheduleVisibility(false, false);
-          else window.clearTimeout(hoverTimer.current);
+          clearVisibilityTimers();
+          if (pinned && !hovered.current) {
+            if (fullscreen) fullscreenHide.current = window.setTimeout(hide, hideDelay);
+            else scheduleVisibility(false, false);
+          }
         }}><SearchIcon name="pin" /></button>
       <div className="search-results-anchor" id="pdf-search-matches" hidden={!resultsOpen}>
         <div className="search-results-menu">

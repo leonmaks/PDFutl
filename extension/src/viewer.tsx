@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type FormEvent, type Ref } from 'react';
 import { createRoot } from 'react-dom/client';
 import { localEngine } from '@embedpdf/engine';
 import { StageToken, ZoomMode, type StageViewState } from '@embedpdf/plugin-stage/contract/host';
@@ -6,8 +6,9 @@ import { DocumentGate, Viewer, useCapability, useDocumentId, useDocuments, usePa
 import { Stage, stagePlugin, useStage, useStageState } from '@embedpdf/react/stage';
 import { RenderLayer, renderPlugin } from '@embedpdf/react/render';
 import { SearchLayer, searchPlugin } from '@embedpdf/react/search';
-import { SelectionLayer, selectionPlugin } from '@embedpdf/react/selection';
+import { SelectionClipboard, SelectionLayer, selectionPlugin } from '@embedpdf/react/selection';
 import { AnnotationLayer, annotationPlugin } from '@embedpdf/react/annotation';
+import { historyPlugin } from '@embedpdf/react/history';
 import { interactionPlugin } from '@embedpdf/react/interaction';
 import { outlinePlugin, useOutline } from '@embedpdf/react/outline';
 import type { PdfBookmark } from './outlineProtocol';
@@ -31,8 +32,9 @@ const plugins = [
   renderPlugin(),
   interactionPlugin(),
   selectionPlugin(),
-  searchPlugin({ reveal: { behavior: 'instant' }, highlight: { color: '#bcff38', activeColor: '#ff8b21', blendMode: 'normal' } }),
+  searchPlugin({ reveal: { behavior: 'instant' } }),
   annotationPlugin(),
+  historyPlugin(),
   outlinePlugin(),
 ];
 
@@ -183,7 +185,9 @@ function PdfViewPersistence({ user }: { user: string }) {
   return null;
 }
 
-function PageIndicator() {
+type PageIndicatorHandle = { open(): void };
+
+function PageIndicator({ ref }: { ref: Ref<PageIndicatorHandle> }) {
   const stage = useStage();
   const page = useStageState(state => state.currentPageIndex) + 1;
   const pages = useStageState(state => state.pageCount);
@@ -193,6 +197,16 @@ function PageIndicator() {
   const [draft, setDraft] = useState<string | null>(null);
   const [invalid, setInvalid] = useState(false);
   const editing = draft !== null;
+
+  const open = useCallback(() => {
+    if (editing) {
+      field.current?.focus({ preventScroll: true });
+      field.current?.select();
+    } else {
+      setDraft(String(page));
+    }
+  }, [editing, page]);
+  useImperativeHandle(ref, () => ({ open }), [open]);
 
   useLayoutEffect(() => {
     if (editing) {
@@ -224,7 +238,7 @@ function PageIndicator() {
     if (target !== page) stage.goToPage(target - 1, { behavior: 'instant' });
   }
 
-  if (pages <= 1) return null;
+  if (pages <= 1 && !editing) return null;
 
   return <form className="page-indicator" aria-label="Current page" data-current-page={page} onSubmit={goToPage}>
     {editing ? <input ref={field} className="page-number" aria-label="Page number" type="text" inputMode="numeric"
@@ -238,7 +252,7 @@ function PageIndicator() {
         finishEditing(true);
     }} /> : <button ref={button} className="page-number" type="button"
       aria-label={`Page ${page} of ${pages}. Go to page`} title="Go to page"
-      onClick={() => setDraft(String(page))}>{page}</button>}
+      onClick={open}>{page}</button>}
     <span> / {pages}</span>
     {invalid && <span className="page-number-error" id="page-number-error" role="alert">
       Enter a page from 1 to {pages}.
@@ -298,20 +312,26 @@ function PdfOutlineBridge() {
   return null;
 }
 
-function PdfDocument({ name, user, highlights, commentEdits, unrestored }: {
+function PdfDocument({ name, user, highlights, commentEdits, unrestored, fullscreen }: {
   name: string | undefined; user: string; highlights: readonly SavedPdfHighlight[];
   commentEdits: readonly SavedPdfCommentEdit[]; unrestored: readonly SavedPdfCommentEdit[];
+  fullscreen: boolean;
 }) {
   const documents = useDocuments();
   const id = useDocumentId();
   const search = useRef<PdfSearchHandle>(null);
+  const pageIndicator = useRef<PageIndicatorHandle>(null);
   const [commentsOpen, setCommentsOpen] = useState(false);
   const [exportRequest, setExportRequest] = useState<string>();
   const [notice, setNotice] = useState('');
   const [fragment, setFragment] = useState<PdfFragment>();
+  const pendingAnnotation = useRef<{ id: string; resolve: () => void; reject: (reason: Error) => void } | undefined>(undefined);
   const pages = usePageList();
   const stage = useStage();
-  const annotations = usePdfAnnotations(user, highlights, commentEdits, unrestored, message => bridge.postMessage(message));
+  const annotations = usePdfAnnotations(user, highlights, commentEdits, unrestored, message => new Promise<void>((resolve, reject) => {
+    pendingAnnotation.current = { id: message.id, resolve, reject };
+    bridge.postMessage(message);
+  }));
   const toggleComments = useCallback(() => setCommentsOpen(value => !value), []);
   const closeComments = useCallback(() => setCommentsOpen(false), []);
   const fragmentPage = fragment && (pages.find(page => page.ref.objectNumber === fragment.pageObjectNumber) ?? pages[fragment.pageIndex]);
@@ -323,6 +343,13 @@ function PdfDocument({ name, user, highlights, commentEdits, unrestored }: {
           window.focus();
           search.current?.open();
           return;
+        case 'moveSearch':
+          search.current?.move(event.data.direction);
+          return;
+        case 'focusPageNumber':
+          window.focus();
+          pageIndicator.current?.open();
+          return;
         case 'togglePageComments':
           window.focus();
           search.current?.toggleComments();
@@ -330,9 +357,14 @@ function PdfDocument({ name, user, highlights, commentEdits, unrestored }: {
         case 'revealFragment':
           setFragment(event.data.fragment);
           return;
-        case 'annotationSaveError':
-          setNotice(event.data.message);
+        case 'annotationSaveResult': {
+          const request = pendingAnnotation.current;
+          if (request?.id !== event.data.id) return;
+          pendingAnnotation.current = undefined;
+          if (event.data.error) request.reject(new Error(event.data.error));
+          else request.resolve();
           return;
+        }
         case 'exportPdf':
           setNotice('');
           setExportRequest(event.data.requestId);
@@ -344,8 +376,71 @@ function PdfDocument({ name, user, highlights, commentEdits, unrestored }: {
     };
     window.addEventListener('message', dispose);
     bridge.postMessage({ type: 'opened' });
-    return () => window.removeEventListener('message', dispose);
+    return () => {
+      window.removeEventListener('message', dispose);
+      pendingAnnotation.current?.reject(new Error('The PDF view was closed.'));
+      pendingAnnotation.current = undefined;
+    };
   }, []);
+
+  const { add, canAdd, hasSelection, startComment } = annotations;
+  useLayoutEffect(() => {
+    function onMenuCommand(event: MessageEvent<HostMessage>) {
+      const message = event.data;
+      if (message?.type === 'zoomPdf') {
+        switch (message.action) {
+          case 'in': stage.zoomIn(); break;
+          case 'out': stage.zoomOut(); break;
+          case 'actualSize': stage.zoomTo(1); break;
+          case 'fitPage': stage.fitPage(); break;
+        }
+      }
+      if (message?.type !== 'addComment' && message?.type !== 'highlightSelection') return;
+      if (!hasSelection()) {
+        setNotice('Select text in the PDF first.');
+        return;
+      }
+      if (!canAdd) return;
+      setNotice('');
+      if (message.type === 'addComment') {
+        window.focus();
+        startComment();
+      } else {
+        void add('');
+      }
+    }
+    window.addEventListener('message', onMenuCommand);
+    return () => window.removeEventListener('message', onMenuCommand);
+  }, [add, canAdd, hasSelection, stage, startComment]);
+
+  const undoAnnotation = annotations.undo;
+  useLayoutEffect(() => {
+    function undo() {
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && (active.isContentEditable ||
+          active.matches('textarea:not([readonly]), input:is([type=text], [type=search], :not([type])):not([readonly])'))) {
+        document.execCommand('undo');
+        return;
+      }
+      undoAnnotation();
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (!event.ctrlKey || event.shiftKey || event.altKey || event.metaKey || event.isComposing || event.code !== 'KeyZ') return;
+      event.preventDefault();
+      // The webview normally forwards Ctrl+Z to Code-OSS. Handle it once, where focus is known.
+      event.stopImmediatePropagation();
+      undo();
+    }
+    function onMessage(event: MessageEvent<HostMessage>) {
+      if (event.data?.type === 'undoAnnotation') undo();
+    }
+    window.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener('message', onMessage);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true);
+      window.removeEventListener('message', onMessage);
+    };
+  }, [undoAnnotation]);
 
   useEffect(() => {
     if (!fragment || !fragmentPage) return;
@@ -375,8 +470,9 @@ function PdfDocument({ name, user, highlights, commentEdits, unrestored }: {
     {notice && <div className="status" role="status">{notice}</div>}
     {annotations.error && <div className="status" role="alert">{annotations.error}</div>}
     <div className="reading-area">
+      <SelectionClipboard />
       <PdfViewPersistence user={user} />
-      <PdfSearch ref={search}
+      <PdfSearch ref={search} fullscreen={fullscreen}
         onToggleComments={toggleComments} onCloseComments={closeComments}
         pageComments={commentsOpen ? <PageComments annotations={annotations} close={closeComments} /> : undefined}>
         <Stage className="stage" overlay={<PdfAnnotationOverlay annotations={annotations} />}>
@@ -396,7 +492,7 @@ function PdfDocument({ name, user, highlights, commentEdits, unrestored }: {
             width: fragment.rect.width * page.transform.viewScale, height: fragment.rect.height * page.transform.viewScale,
           }} />}
         </div>}</Stage>
-        <PageIndicator />
+        <PageIndicator ref={pageIndicator} />
       </PdfSearch>
       <PdfOutlineBridge />
     </div>
@@ -409,10 +505,30 @@ function App() {
     highlights: readonly SavedPdfHighlight[]; commentEdits: readonly SavedPdfCommentEdit[]; unrestored: readonly SavedPdfCommentEdit[];
   }>();
   const [error, setError] = useState('');
+  const [fullscreen, setFullscreen] = useState(false);
+  const fullscreenRef = useRef(false);
+
+  useLayoutEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.isComposing || event.ctrlKey || event.altKey || event.shiftKey || event.metaKey) return;
+      const exit = event.key === 'Escape' && fullscreenRef.current;
+      if (!exit && event.key !== 'F11') return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (!event.repeat) bridge.postMessage({ type: exit ? 'exitFullscreen' : 'toggleFullscreen' });
+    }
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, []);
 
   useEffect(() => {
     async function receive(event: MessageEvent<HostMessage>) {
       const message = event.data;
+      if (message?.type === 'pdfutl.fullscreen') {
+        fullscreenRef.current = message.active;
+        setFullscreen(message.active);
+        return;
+      }
       if (message?.type === 'error') { if (!session) setError(message.message); return; }
       if (message?.type !== 'open') return;
       try {
@@ -440,7 +556,7 @@ function App() {
     renderError={reason => failed(messageOf(reason))}>
     <DocumentGate fallback={opening} error={pdf => failed(messageOf(pdf.error))}
       locked={() => failed('This PDF requires a password.')}>
-      <PdfDocument name={session.source.name} user={session.user} highlights={session.highlights}
+      <PdfDocument name={session.source.name} user={session.user} highlights={session.highlights} fullscreen={fullscreen}
         commentEdits={session.commentEdits} unrestored={session.unrestored} />
     </DocumentGate>
   </Viewer>;

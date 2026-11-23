@@ -1,12 +1,21 @@
 :root {
-  color: var(--vscode-foreground);
-  background: var(--vscode-editor-background);
+  color: var(--vscode-foreground, CanvasText);
+  background: var(--vscode-editor-background, Canvas);
   font-family: var(--vscode-font-family);
   font-size: var(--vscode-font-size, 13px);
+  --epdf-accent: var(--vscode-focusBorder, #0c7d9d);
+  --epdf-text-selection: color-mix(in srgb, var(--vscode-editor-selectionBackground, #204182cc) 55%, transparent);
+  --epdf-search-highlight: var(--vscode-editor-findMatchHighlightBackground, #ea5c0055);
+  --epdf-search-highlight-active: color-mix(in srgb, var(--vscode-editor-findMatchBackground, #515c6a) 55%, transparent);
+  --epdf-search-blend-mode: normal;
 }
 
 * { box-sizing: border-box; }
 html, body, #app { height: 100%; margin: 0; padding: 0; }
+body.vscode-dark, body.vscode-high-contrast:not(.vscode-high-contrast-light) { color-scheme: dark; }
+::-webkit-scrollbar-thumb { background-color: var(--vscode-scrollbarSlider-background, #80808066); }
+::-webkit-scrollbar-thumb:hover { background-color: var(--vscode-scrollbarSlider-hoverBackground, #80808099); }
+::-webkit-scrollbar-thumb:active { background-color: var(--vscode-scrollbarSlider-activeBackground, #808080bb); }
 button, input, textarea { font: inherit; }
 button {
   color: inherit;
@@ -18,9 +27,13 @@ button {
   cursor: pointer;
 }
 button:hover:enabled { background: var(--vscode-toolbar-hoverBackground); }
+button:active:enabled { background: var(--vscode-toolbar-activeBackground, var(--vscode-toolbar-hoverBackground)); }
+button:enabled:not([aria-pressed='true'], [aria-current='true']) > svg {
+  color: var(--vscode-icon-foreground, currentColor);
+}
 button[aria-pressed='true'], button[aria-current='true'] {
-  background: var(--vscode-list-activeSelectionBackground);
-  color: var(--vscode-list-activeSelectionForeground);
+  background: var(--vscode-list-activeSelectionBackground, Highlight);
+  color: var(--vscode-list-activeSelectionForeground, HighlightText);
 }
 button:disabled { color: var(--vscode-disabledForeground); cursor: default; }
 input, textarea {
@@ -32,7 +45,7 @@ input, textarea {
   padding: 4px 7px;
 }
 button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
-mark { color: inherit; background: var(--vscode-editor-findMatchHighlightBackground); }
+mark { color: inherit; background: var(--epdf-search-highlight); }
 .viewer { display: flex; flex-direction: column; height: 100%; }
 .reading-area { flex: 1; min-height: 0; display: flex; }
 .preview {
@@ -83,6 +96,9 @@ mark { color: inherit; background: var(--vscode-editor-findMatchHighlightBackgro
   right: 0;
   bottom: calc(100% + 4px);
   padding: 4px 8px;
+  color: var(--vscode-inputValidation-errorForeground, var(--vscode-errorForeground, CanvasText));
+  background: var(--vscode-inputValidation-errorBackground, var(--vscode-editorWidget-background, Canvas));
+  border-color: var(--vscode-inputValidation-errorBorder, currentColor);
 }
 .search-overlay {
   position: absolute;
@@ -157,8 +173,32 @@ mark { color: inherit; background: var(--vscode-editor-findMatchHighlightBackgro
   border-radius: 9px;
   cursor: pointer;
 }
-.search-options-card label:hover { background: var(--vscode-toolbar-hoverBackground, #8882); }
-.search-options-card input { min-height: 0; margin: 0; accent-color: var(--vscode-focusBorder, Highlight); }
+.search-options-card label:hover, .search-results .result:hover:enabled {
+  color: var(--vscode-menu-selectionForeground, HighlightText);
+  background: var(--vscode-menu-selectionBackground, Highlight);
+}
+.search-options-card input {
+  appearance: none;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  flex: none;
+  margin: 0;
+  padding: 0;
+  color: var(--vscode-checkbox-foreground, FieldText);
+  background: var(--vscode-checkbox-background, Field);
+  border-color: var(--vscode-checkbox-border, currentColor);
+}
+.search-options-card input:checked::after {
+  content: '';
+  width: 8px;
+  height: 4px;
+  border: solid currentColor;
+  border-width: 0 0 2px 2px;
+  transform: translateY(-1px) rotate(-45deg);
+}
 .search-options button[data-active='true'], .search-options button[aria-expanded='true'] {
   box-shadow: inset 0 0 0 1px var(--vscode-focusBorder, Highlight);
 }
@@ -172,10 +212,6 @@ mark { color: inherit; background: var(--vscode-editor-findMatchHighlightBackgro
   font-variant-numeric: tabular-nums;
 }
 .search-comments { grid-area: comments; justify-self: end; }
-.search-overlay button[aria-pressed='true'], .search-overlay button[aria-current='true'] {
-  background: var(--vscode-list-activeSelectionBackground, Highlight);
-  color: var(--vscode-list-activeSelectionForeground, HighlightText);
-}
 .search-count {
   max-width: 88px;
   padding: 0 2px;
@@ -194,14 +230,14 @@ mark { color: inherit; background: var(--vscode-editor-findMatchHighlightBackgro
   overscroll-behavior: contain;
 }
 .search-results, .search-options-card {
-  border: 1px solid var(--vscode-editorWidget-border, var(--vscode-editorGroup-border, #8885));
+  border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border, #8885));
   border-radius: 14px;
-  background: var(--vscode-editorWidget-background, var(--vscode-editor-background, Canvas));
+  color: var(--vscode-menu-foreground, var(--vscode-foreground, CanvasText));
+  background: var(--vscode-menu-background, var(--vscode-editorWidget-background, Canvas));
   box-shadow: 0 3px 12px var(--vscode-widget-shadow, #0005);
 }
 .search-results .result { border-radius: 9px; }
 .search-results .result[aria-current='true'] { box-shadow: inset 0 0 0 1px var(--vscode-focusBorder, Highlight); }
-.search-results mark { background: var(--vscode-editor-findMatchHighlightBackground, #ff8b2160); }
 @container (max-width: 640px) {
   .search-overlay {
     grid-template-columns: minmax(0, 1fr) minmax(0, max-content) auto auto;
@@ -224,6 +260,46 @@ mark { color: inherit; background: var(--vscode-editor-findMatchHighlightBackgro
   .search-count { max-width: 75px; }
   .zoom-controls { justify-self: start; }
 }
+
+.preview[data-fullscreen='true'] .search-overlay {
+  inset: 12px auto auto max(4px, calc((100cqw - 612px) / 2));
+  width: min(612px, calc(100cqw - 8px));
+  z-index: 4;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto auto auto;
+  grid-template-areas: "move field navigation options zoom comments pin" "results results results results results results results";
+  --search-options-gap: 9px;
+}
+.search-move { grid-area: move; cursor: grab; touch-action: none; }
+.search-move:active { cursor: grabbing; }
+.preview[data-fullscreen='true'] .search-results,
+.preview[data-fullscreen='true'] .search-options-card {
+  max-height: min(272px, var(--pdf-popup-space, 272px));
+}
+.preview[data-fullscreen='true'] .search-overlay[data-popup-above='true'] .search-results-menu {
+  inset: auto 0 calc(var(--pdf-toolbar-height) + 3px);
+  padding-top: 0;
+}
+.preview[data-fullscreen='true'] .search-overlay[data-popup-above='true'] .search-options-popup {
+  top: auto;
+  bottom: 100%;
+  padding: 0 0 9px;
+}
+@container (max-width: 540px) {
+  .preview[data-fullscreen='true'] .search-overlay {
+    grid-template-columns: auto minmax(0, 1fr) minmax(0, max-content) auto auto;
+    grid-template-areas: "move field field options pin" "navigation navigation zoom zoom comments" "results results results results results";
+    border-radius: 24px;
+    --search-options-gap: 40px;
+  }
+  .preview[data-fullscreen='true'] .search-field { width: 100%; }
+}
+@container (max-width: 294px) {
+  .preview[data-fullscreen='true'] .search-overlay {
+    grid-template-areas: "move field field options pin" "navigation navigation navigation comments comments" "zoom zoom zoom zoom zoom" "results results results results results";
+    --search-options-gap: 71px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .search-overlay, .search-overlay[data-visible='false'] { transition: none; }
 }
@@ -247,7 +323,7 @@ mark { color: inherit; background: var(--vscode-editor-findMatchHighlightBackgro
 .annotation-swatch > span {
   width: 15px;
   height: 15px;
-  border: 1px solid #0004;
+  border: 1px solid var(--vscode-contrastBorder, var(--vscode-editorWidget-border, #0004));
   border-radius: 50%;
 }
 .annotation-marker {
@@ -281,9 +357,19 @@ mark { color: inherit; background: var(--vscode-editor-findMatchHighlightBackgro
   border-radius: 8px;
 }
 .annotation-card-actions { justify-content: flex-end; }
+.annotation-card-actions > button[type='button'] {
+  color: var(--vscode-button-secondaryForeground, CanvasText);
+  background: var(--vscode-button-secondaryBackground, Canvas);
+}
+.annotation-card-actions > button[type='button']:hover:enabled {
+  background: var(--vscode-button-secondaryHoverBackground, var(--vscode-button-secondaryBackground, Canvas));
+}
 .annotation-card-actions > button[type='submit'] {
   color: var(--vscode-button-foreground, HighlightText);
   background: var(--vscode-button-background, Highlight);
+}
+.annotation-card-actions > button[type='submit']:hover:enabled {
+  background: var(--vscode-button-hoverBackground, var(--vscode-button-background, Highlight));
 }
 .annotation-card-actions > button[type='submit']:disabled { opacity: 0.5; }
 .page-comments-panel {
@@ -306,6 +392,7 @@ mark { color: inherit; background: var(--vscode-editor-findMatchHighlightBackgro
 .page-comment-message .annotation-comment-text, .page-comments-empty { margin: 0; }
 .muted { color: var(--vscode-descriptionForeground); }
 .status { padding: 8px; margin: 0; }
+.status[role='alert'] { color: var(--vscode-errorForeground, CanvasText); }
 .page-paper, .search-background, .page-art { position: absolute; inset: 0; }
 .page-paper { background: white; isolation: isolate; }
 .search-background, .page-art { pointer-events: none; }

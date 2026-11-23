@@ -8,6 +8,11 @@ export const codeOss = join(root, '.upstream', 'code-oss');
 export const electronVersion = '45.4.1';
 export const electron = join(root, '.upstream', `electron-${electronVersion}`, 'electron.exe');
 export const nodeDir = join(root, '.upstream', 'node-24.22.3', 'node-v24.22.3-win-x64');
+export const productDisplay = {
+  nameShort: 'PDFutl',
+  nameLong: 'PDFutl',
+  reportIssueUrl: 'https://github.com/leonmaks/PDFutl/issues/new',
+};
 const sourceRef = '1.147.0';
 const sourceCommit = '8a14f0cc1b08d531eb83255ea3764ae22aa932b5';
 
@@ -75,6 +80,12 @@ function prepare() {
     .replace(/^ +"msBuildId": "[0-9]+",\r?\n/m, '');
   if (configured !== contents) writeFileSync(file, configured);
 
+  const productFile = join(codeOss, 'product.json');
+  const product = JSON.parse(readFileSync(productFile, 'utf8'));
+  if (Object.entries(productDisplay).some(([key, value]) => product[key] !== value)) {
+    writeFileSync(productFile, JSON.stringify({ ...product, ...productDisplay }, null, '\t') + '\n');
+  }
+
   // The upstream verifier assumes Microsoft's private build ID. OSS uses the public assets.
   const versionFile = join(codeOss, 'build', 'lib', 'electronVersion.ts');
   const versionSource = readFileSync(versionFile, 'utf8');
@@ -91,10 +102,13 @@ function prepare() {
   if (patched !== checksums) writeFileSync(checksumFile, patched);
 
   restoreSidebarActions();
+  preparePdfMenubar();
   prepareEditorSplitFrames();
   preparePdfTimelinePresentation();
+  preparePdfOpenTracking();
   preparePdfPinnedFolders();
   preparePdfWindowZoom();
+  preparePdfFullscreen();
   patchCodeOssSource('workbench/contrib/customEditor/browser/customEditorInput.ts', source => {
     if (source.includes("'pdfutl.saveAs'")) return source;
     return source
@@ -110,6 +124,14 @@ function prepare() {
         "",
         "\t\tconst dialogPath = this._editorResource;",
       ].join('\n'));
+  });
+  patchCodeOssSource('workbench/contrib/customEditor/browser/customEditorInput.ts', source => {
+    if (source.includes("'pdfutl.undoAnnotation'")) return source;
+    return source.replace('public undo(): void | Promise<void> {', `public undo(): void | Promise<void> {
+		if (this.viewType === 'pdfutl.viewer') {
+			return this.instantiationService.invokeFunction(accessor => accessor.get(ICommandService)
+				.executeCommand<void>('pdfutl.undoAnnotation'));
+		}`);
   });
   patchCodeOssSource('workbench/contrib/files/browser/explorerViewlet.ts', source => source
     .replace(/^[\t]{3}hideByDefault: true,\r?\n(?=\t{3}focusCommand:\s*\{\s*id: 'workbench\.files\.action\.focusOpenEditorsView')/m, '')
@@ -151,6 +173,8 @@ function prepare() {
       'const chord = new KeyCodeChord(ctrlKey, keyboardEvent.shiftKey, altKey, keyboardEvent.metaKey, keyboardEvent.keyCode);')
     .replace(/\/\/ Keep the navigator and PDF search shortcuts on physical keys in every Windows layout\.[\s\S]*?const chord = new KeyCodeChord\(ctrlKey, keyboardEvent.shiftKey, altKey, keyboardEvent.metaKey, keyCode\);/,
       'const chord = new KeyCodeChord(ctrlKey, keyboardEvent.shiftKey, altKey, keyboardEvent.metaKey, keyboardEvent.keyCode);')
+    .replace(/\/\/ Normalize the physical keys used by PDFUtl shortcuts in every Windows layout\.[\s\S]*?const chord = new KeyCodeChord\(ctrlKey, keyboardEvent.shiftKey, altKey, keyboardEvent.metaKey, keyCode\);/,
+      'const chord = new KeyCodeChord(ctrlKey, keyboardEvent.shiftKey, altKey, keyboardEvent.metaKey, keyboardEvent.keyCode);')
     .replace(
       'const chord = new KeyCodeChord(ctrlKey, keyboardEvent.shiftKey, altKey, keyboardEvent.metaKey, keyboardEvent.keyCode);',
       `// Normalize the physical keys used by PDFUtl shortcuts in every Windows layout.
@@ -162,6 +186,8 @@ function prepare() {
 				keyCode = KeyCode.KeyB;
 			} else if (!keyboardEvent.shiftKey && keyboardEvent.code === 'KeyF') {
 				keyCode = KeyCode.KeyF;
+			} else if (!keyboardEvent.shiftKey && keyboardEvent.code === 'KeyZ') {
+				keyCode = KeyCode.KeyZ;
 			}
 		}
 		const chord = new KeyCodeChord(ctrlKey, keyboardEvent.shiftKey, altKey, keyboardEvent.metaKey, keyCode);`,
@@ -226,6 +252,114 @@ import { pdfPinnedFoldersViewId } from './pdfPinnedFolders.js';`)
 		const labelStr = treeItemLabel ?`)
       .replace('setResource({ name: label, description, resource: labelResource }', 'setResource({ name: label, description: visibleDescription, resource: labelResource }')
       .replace('setResource({ name: label, description }', 'setResource({ name: label, description: visibleDescription }');
+  });
+}
+
+function preparePdfOpenTracking() {
+  const customEditorDir = 'workbench/contrib/customEditor/browser';
+  const input = `${customEditorDir}/customEditorInput.ts`;
+  const patch = (file, before, after) => patchCodeOssSource(file, source => {
+    if (source.includes(after)) return source;
+    if (!source.includes(before)) throw new Error(`Could not add PDF Timeline open tracking to ${file}`);
+    return source.replace(before, after);
+  });
+  // Only the regular file resolver marks new inputs. Restored tabs and split copies bypass it.
+  patch(input, 'interface CustomEditorInputInitInfo {',
+    'interface CustomEditorInputInitInfo {\n\treadonly pdfutlExplicitOpen?: boolean;');
+  patch(input, 'public readonly oldResource?: URI;', 'public readonly oldResource?: URI;\n\tpublic readonly pdfutlExplicitOpen: boolean;');
+  patch(input, 'this.oldResource = options.oldResource;',
+    'this.oldResource = options.oldResource;\n\t\tthis.pdfutlExplicitOpen = init.pdfutlExplicitOpen === true;');
+  patch(`${customEditorDir}/customEditors.ts`,
+    'preferredName: label, iconPath: undefined',
+    "preferredName: label, iconPath: undefined, pdfutlExplicitOpen: contributedEditor.id === 'pdfutl.viewer'");
+  patch('workbench/api/browser/mainThreadCustomEditors.ts',
+    'await this._proxyCustomEditors.$resolveCustomEditor(actualResource, handle, viewType, initData, position, cancellation);',
+    `await this._proxyCustomEditors.$resolveCustomEditor(actualResource, handle, viewType, {
+							...initData,
+							pdfutlExplicitOpen: webviewInput.pdfutlExplicitOpen,
+						}, position, cancellation);`);
+  for (const file of ['extHost.protocol.ts', 'extHostCustomEditors.ts']) {
+    const path = `workbench/api/common/${file}`;
+    patchCodeOssSource(path, source => {
+      const start = source.indexOf('$resolveCustomEditor(');
+      const end = source.indexOf('position: EditorGroupColumn,', start);
+      const signature = source.slice(start, end);
+      if (signature.includes('pdfutlExplicitOpen')) return source;
+      if (start < 0 || end < 0 || !signature.includes('active: boolean;')) {
+        throw new Error(`Could not add PDF Timeline open tracking to ${path}`);
+      }
+      return source.slice(0, start) + signature.replace('active: boolean;', 'active: boolean;\n\t\t\tpdfutlExplicitOpen?: boolean;') + source.slice(end);
+    });
+  }
+  patch('workbench/api/common/extHostCustomEditors.ts',
+    'return entry.provider.resolveCustomEditor(document, panel, cancellation);',
+    `if (viewType === 'pdfutl.viewer' && initData.pdfutlExplicitOpen) {
+					Object.assign(panel, { pdfutlExplicitOpen: true });
+				}
+				return entry.provider.resolveCustomEditor(document, panel, cancellation);`);
+}
+
+function preparePdfMenubar() {
+  const titlebar = 'workbench/browser/parts/titlebar';
+  const actions = 'platform/actions/common/actions.ts';
+  const control = `${titlebar}/menubarControl.ts`;
+  for (const [name, folder] of [['pdfMenubarItems.ts', 'platform/actions/common'], ['pdfMenubar.ts', titlebar]]) {
+    const implementation = readFileSync(join(root, 'workbench', name));
+    const target = join(codeOss, 'src', 'vs', folder, name);
+    if (!existsSync(target) || !implementation.equals(readFileSync(target))) writeFileSync(target, implementation);
+  }
+
+  function patch(file, before, after) {
+    patchCodeOssSource(file, source => {
+      if (source.includes(after)) return source;
+      const updated = source.replace(before, after);
+      if (updated === source) throw new Error(`Could not configure the PDFutl menu in ${file}`);
+      return updated;
+    });
+  }
+
+  const actionImport = "import { IKeybindingRule, KeybindingsRegistry } from '../../keybinding/common/keybindingsRegistry.js';";
+  patch(actions, actionImport, `${actionImport}\nimport { filterPdfMenubarItems } from './pdfMenubarItems.js';`);
+  patch(actions, /return result;(?=\r?\n\t}\r?\n\r?\n\tappendMenuGroup)/,
+    'return filterPdfMenubarItems(id.id, result);');
+
+  const menuImport = "import { IsMacNativeContext } from '../../../../platform/contextkey/common/contextkeys.js';";
+  patch(`${titlebar}/menubar.contribution.ts`, menuImport, `${menuImport}\nimport './pdfMenubar.js';`);
+  const recentImport = "import { IRecentlyOpened, isRecentFolder, IRecent, isRecentWorkspace, IWorkspacesService } from '../../../../platform/workspaces/common/workspaces.js';";
+  patch(control, recentImport, `${recentImport}\nimport { localPdfRecents } from '../../../../platform/actions/common/pdfMenubarItems.js';`);
+  patch(control, 'this.recentlyOpened = recentlyOpened;', 'this.recentlyOpened = localPdfRecents(recentlyOpened);');
+
+  const windowActions = 'workbench/browser/actions/windowActions.ts';
+  const workspaceImport = "import { IWorkspaceContextService, IWorkspaceIdentifier, isWorkspaceIdentifier, isSingleFolderWorkspaceIdentifier } from '../../../platform/workspace/common/workspace.js';";
+  patch(windowActions, workspaceImport, workspaceImport.replace('isSingleFolderWorkspaceIdentifier }', 'isSingleFolderWorkspaceIdentifier, WorkbenchState }') +
+    "\nimport { localPdfRecents } from '../../../platform/actions/common/pdfMenubarItems.js';");
+  patch(windowActions, 'const filePicks = recentlyOpened.files.map(',
+    `const documentWindow = contextService.getWorkbenchState() === WorkbenchState.EMPTY;
+		const visibleRecents = documentWindow ? localPdfRecents(recentlyOpened) : recentlyOpened;
+		const filePicks = visibleRecents.files.map(`);
+  patch(windowActions, 'const picks = [workspaceSeparator, ...workspacePicks, fileSeparator, ...filePicks];',
+    'const picks = documentWindow ? filePicks : [workspaceSeparator, ...workspacePicks, fileSeparator, ...filePicks];');
+  patch(windowActions, 'activeItem: [...workspacePicks, ...filePicks][autoFocusSecondEntry ? 1 : 0],',
+    'activeItem: documentWindow ? filePicks[0] : [...workspacePicks, ...filePicks][autoFocusSecondEntry ? 1 : 0],');
+}
+
+function preparePdfFullscreen() {
+  const actionsDir = 'workbench/browser/actions';
+  const implementation = readFileSync(join(root, 'workbench', 'pdfFullscreen.ts'));
+  const target = join(codeOss, 'src', 'vs', actionsDir, 'pdfFullscreen.ts');
+  if (!existsSync(target) || !implementation.equals(readFileSync(target))) writeFileSync(target, implementation);
+
+  // A running development instance caches the list of CSS modules for new windows.
+  const styles = readFileSync(join(root, 'workbench', 'pdfFullscreen.css'), 'utf8');
+  const marker = '\n/* PDFUtl fullscreen */\n';
+  patchCodeOssSource(`${actionsDir}/media/actions.css`, source => `${source.split(marker, 1)[0].trimEnd()}\n${marker}${styles}`);
+
+  patchCodeOssSource(`${actionsDir}/windowActions.ts`, source => {
+    if (source.includes('togglePdfFullscreen')) return source;
+    return source
+      .replace("import { IHostService }", "import { togglePdfFullscreen } from './pdfFullscreen.js';\nimport { IEditorService } from '../../services/editor/common/editorService.js';\nimport { IHostService }")
+      .replace('return hostService.toggleFullScreen(getActiveWindow());',
+        'const window = getActiveWindow();\n\t\treturn togglePdfFullscreen(accessor.get(IEditorService), hostService, window) ?? hostService.toggleFullScreen(window);');
   });
 }
 

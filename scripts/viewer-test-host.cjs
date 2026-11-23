@@ -34,6 +34,13 @@ app.whenReady().then(async () => {
       }
       case 'annotationSaved':
         if (message.commentEdit) commentEdits = [{ ...message.commentEdit, editor: 'Historical reviewer' }];
+        event.reply('pdfutl-test-host', { type: 'annotationSaveResult', id: message.id });
+        break;
+      case 'toggleFullscreen':
+        window.setFullScreen(!window.isFullScreen());
+        break;
+      case 'exitFullscreen':
+        window.setFullScreen(false);
         break;
       case 'exportedPdf':
         await writeFile(output, Buffer.from(message.bytes));
@@ -50,6 +57,9 @@ app.whenReady().then(async () => {
     preload: join(__dirname, 'viewer-test-preload.cjs'),
     sandbox: true,
   } });
+  const reportFullscreen = active => window.webContents.send('pdfutl-test-host', { type: 'pdfutl.fullscreen', active });
+  window.on('enter-full-screen', () => reportFullscreen(true));
+  window.on('leave-full-screen', () => reportFullscreen(false));
   await window.loadURL(`${scheme}://local/index.html`);
 });
 

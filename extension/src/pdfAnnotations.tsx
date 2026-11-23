@@ -5,6 +5,7 @@ import {
   type Annotation, type AnnotationBundle, type AnnotationRef,
 } from '@embedpdf/react/annotation';
 import { usePageList } from '@embedpdf/react/runtime';
+import { useHistory } from '@embedpdf/react/history';
 import { SelectionMenu, useSelection } from '@embedpdf/react/selection';
 import { useStage, useStageState } from '@embedpdf/react/stage';
 import { pdfCommentKey, type SavedPdfCommentEdit, type SavedPdfHighlight } from './pdfAnnotationActivity';
@@ -18,7 +19,8 @@ const colors = [
 ] as const;
 type Markup = Extract<Annotation, { subtype: 'highlight' }>;
 type Card = { anchor: AnchorTarget } | { ref: AnnotationRef };
-type PostAnnotation = (message: Extract<ViewerMessage, { type: 'annotationSaved' }>) => void;
+type AnnotationMessage = Extract<ViewerMessage, { type: 'annotationSaved' }>;
+type UndoEntry = { id: string; previousEditor?: { key: string; name?: string } };
 type CommentThread = ReturnType<typeof useCommentThreads>[number];
 const markKey = (page: number, name: string) => `${page}:${name}`;
 const hasText = (item: Annotation) => Boolean(item.contents?.trim());
@@ -43,7 +45,7 @@ function saveHighlight(item: Markup): SavedPdfHighlight {
   };
 }
 
-function restoreBundle(highlights: readonly SavedPdfHighlight[], pages: ReturnType<typeof usePageList>): AnnotationBundle {
+function highlightBundle(highlights: readonly SavedPdfHighlight[], pages: ReturnType<typeof usePageList>): AnnotationBundle {
   const pageMap = new Map(pages.map(page => [Number(page.ref.objectNumber), page]));
   const used = new Map<number, AnnotationBundle['pages'][number]>();
   const items = highlights.flatMap((item, baseIndex) => {
@@ -70,14 +72,43 @@ function restoreBundle(highlights: readonly SavedPdfHighlight[], pages: ReturnTy
   return { format: 'embedpdf/annotations', version: 1, pages: [...used.values()].sort((a, b) => a.position - b.position), items, resources: {} };
 }
 
+function stepAnnotationHistory(history: ReturnType<typeof useHistory>, direction: 'undo' | 'redo'): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const redo = direction === 'redo';
+    if (!(redo ? history.canRedo() : history.canUndo())) {
+      reject(new Error('This annotation change is no longer available in the undo history.'));
+      return;
+    }
+    const stopDone = history.onUndone(event => {
+      if (event.redo !== redo) return;
+      finish(event.skipped ? new Error('The PDF engine could only apply part of this annotation change.') : undefined);
+    });
+    const stopFailed = history.onUndoFailed(event => {
+      if (event.redo === redo) finish(event.error);
+    });
+    function finish(error?: unknown) {
+      stopDone();
+      stopFailed();
+      if (error) reject(error);
+      else resolve();
+    }
+    try {
+      history[direction]();
+    } catch (error) {
+      finish(error);
+    }
+  });
+}
+
 export function usePdfAnnotations(
   user: string, highlights: readonly SavedPdfHighlight[], edits: readonly SavedPdfCommentEdit[],
-  unrestored: readonly SavedPdfCommentEdit[], post: PostAnnotation,
+  unrestored: readonly SavedPdfCommentEdit[], post: (message: AnnotationMessage) => Promise<void>,
 ) {
   const stage = useStage();
   const pages = usePageList();
   const selection = useSelection();
   const annotation = useAnnotation();
+  const history = useHistory();
   const status = useAnnotationState(state => state.status);
   const threads = useCommentThreads();
   const profileMarks = useRef(new Set(highlights.map(item => markKey(item.pageObjectNumber, item.name))));
@@ -87,6 +118,8 @@ export function usePdfAnnotations(
   const [error, setError] = useState('');
   const [card, setCard] = useState<Card>();
   const lastColor = useRef<string>(colors[0].value);
+  const pending = useRef<Promise<unknown> | undefined>(undefined);
+  const undoEntries = useRef<UndoEntry[]>([]);
 
   useEffect(() => {
     if (!restoring || status === 'loading' || !pages.length) return;
@@ -95,7 +128,7 @@ export function usePdfAnnotations(
     const { signal } = controller;
     async function restore() {
       const imported = new Set(annotation.list().map(item => markKey(item.page.objectNumber, item.nm ?? '')));
-      const bundle = restoreBundle(highlights.filter(item => !imported.has(markKey(item.pageObjectNumber, item.name))), pages);
+      const bundle = highlightBundle(highlights.filter(item => !imported.has(markKey(item.pageObjectNumber, item.name))), pages);
       if (bundle.items.length) await annotation.import(bundle, { attribution: 'restore', history: false, signal });
       for (const edit of unrestored) {
         if (signal.aborted) return;
@@ -104,70 +137,130 @@ export function usePdfAnnotations(
     }
     void restore().catch(reason => {
       if (!signal.aborted) setError(`Could not restore saved annotations. ${messageOf(reason)}`);
-    }).finally(() => { if (!signal.aborted) setRestoring(false); });
+    }).finally(() => {
+      if (signal.aborted) return;
+      history.clear();
+      setRestoring(false);
+    });
     return () => controller.abort();
-  }, [annotation, highlights, pages, restoring, status, unrestored]);
+  }, [annotation, highlights, history, pages, restoring, status, unrestored]);
 
   function fragmentFor(item: Annotation) {
     const page = pages.find(page => page.ref.objectNumber === item.page.objectNumber);
     return page && { pageIndex: page.index, pageObjectNumber: page.ref.objectNumber, rect: item.rect };
   }
 
+  function runChange<T>(work: () => Promise<T>): Promise<T> {
+    setBusy(true);
+    const operation = (pending.current?.catch(() => {}) ?? Promise.resolve()).then(work);
+    pending.current = operation;
+    return operation.finally(() => {
+      if (pending.current !== operation) return;
+      pending.current = undefined;
+      setBusy(false);
+    });
+  }
+
+  async function saveChange(change: Omit<AnnotationMessage, 'type' | 'id'>, previousEditor?: UndoEntry['previousEditor']) {
+    const id = crypto.randomUUID();
+    try {
+      await post({ type: 'annotationSaved', id, ...change });
+    } catch (error) {
+      await stepAnnotationHistory(history, 'undo');
+      throw error;
+    }
+    const entries = undoEntries.current;
+    entries.push({ id, previousEditor });
+    const limit = Math.max(1, history.getSettings().limit);
+    if (entries.length > limit) entries.splice(0, entries.length - limit);
+  }
+
   async function add(color: string, comment: string): Promise<boolean> {
-    if (busy || restoring) return false;
+    if (pending.current || restoring) return false;
     const selectedPages = selection.getSnapshot().pages.filter(entry => entry.segments.length);
     if (!selectedPages.length) return false;
-    setBusy(true);
-    setError('');
-    try {
-      const results = await Promise.allSettled(selectedPages.map(entry => annotation.create(entry.page, {
-        subtype: 'highlight', nm: crypto.randomUUID(), quadPoints: entry.segments.map(segment => segment.quad),
-        color, opacity: 0.45, print: true, contents: comment || null,
-      })));
-      const created = results.flatMap(result => result.status === 'fulfilled' && result.value.annotation.subtype === 'highlight'
-        ? [result.value.annotation] : []);
-      const first = created[0];
-      const fragment = first && fragmentFor(first);
-      if (fragment) {
+    return runChange(async () => {
+      setError('');
+      try {
+        const draft = selectedPages.map(entry => ({
+          pageObjectNumber: entry.page.objectNumber, name: crypto.randomUUID(),
+          quadPoints: entry.segments.map(segment => segment.quad), color, opacity: 0.45, contents: comment || null,
+        }));
+        // Import the whole selection as one engine change, including selections across pages.
+        const result = await annotation.import(highlightBundle(draft, pages), { attribution: 'stamp' });
+        const created = result.annotations.filter((item): item is Markup => item.subtype === 'highlight');
+        const first = created[0];
+        const fragment = first && fragmentFor(first);
+        if (!fragment) throw new Error('Could not mark the selected PDF text.');
         const marks = created.map(saveHighlight);
-        for (const mark of marks) profileMarks.current.add(markKey(mark.pageObjectNumber, mark.name));
-        post({ type: 'annotationSaved', highlights: marks,
+        await saveChange({ highlights: marks,
           activity: comment ? { kind: 'comment', comment, fragment } : { kind: 'highlight', fragment } });
+        for (const mark of marks) profileMarks.current.add(markKey(mark.pageObjectNumber, mark.name));
         lastColor.current = color;
         selection.clear();
         setCard(comment ? { ref: first.ref } : undefined);
+        return true;
+      } catch (reason) {
+        setError(messageOf(reason));
+        return false;
       }
-      const rejected = results.find(result => result.status === 'rejected');
-      if (rejected) setError(messageOf(rejected.reason));
-      return Boolean(fragment);
-    } finally {
-      setBusy(false);
-    }
+    });
   }
 
   async function edit(item: Annotation, comment: string): Promise<boolean> {
     const fragment = fragmentFor(item);
-    if (!fragment || busy || !annotation.comments.canSetText(item.ref)) return false;
+    if (!fragment || pending.current || restoring || !annotation.comments.canSetText(item.ref)) return false;
     if (item.contents === comment) return true;
-    setBusy(true);
-    setError('');
-    try {
-      await annotation.comments.setText(item.ref, comment);
-      const current = annotation.get(item.ref);
-      const activity = { kind: item.contents?.trim() ? 'commentEdited' : 'comment', comment, fragment } as const;
-      if (current?.subtype === 'highlight' && current.nm && profileMarks.current.has(markKey(current.page.objectNumber, current.nm))) {
-        post({ type: 'annotationSaved', activity, highlights: [saveHighlight(current)] });
-      } else {
-        post({ type: 'annotationSaved', activity, commentEdit: { ref: item.ref, contents: comment } });
-        setLastEditors(editors => new Map(editors).set(pdfCommentKey(item.ref), user));
+    return runChange(async () => {
+      setError('');
+      try {
+        await annotation.comments.setText(item.ref, comment);
+        const current = annotation.get(item.ref);
+        const activity = { kind: item.contents?.trim() ? 'commentEdited' : 'comment', comment, fragment } as const;
+        if (current?.subtype === 'highlight' && current.nm && profileMarks.current.has(markKey(current.page.objectNumber, current.nm))) {
+          await saveChange({ activity, highlights: [saveHighlight(current)], updatesHighlight: true });
+        } else {
+          const key = pdfCommentKey(item.ref);
+          await saveChange({ activity, commentEdit: { ref: item.ref, contents: comment } }, { key, name: lastEditors.get(key) });
+          setLastEditors(editors => new Map(editors).set(key, user));
+        }
+        return true;
+      } catch (reason) {
+        setError(messageOf(reason));
+        return false;
       }
-      return true;
-    } catch (reason) {
-      setError(messageOf(reason));
-      return false;
-    } finally {
-      setBusy(false);
-    }
+    });
+  }
+
+  function undo() {
+    if (restoring || (!pending.current && !undoEntries.current.length)) return;
+    void runChange(async () => {
+      const entry = undoEntries.current.at(-1);
+      if (!entry || !history.canUndo()) return;
+      setError('');
+      try {
+        await stepAnnotationHistory(history, 'undo');
+        try {
+          await post({ type: 'annotationSaved', id: crypto.randomUUID(), activity: { kind: 'undo', operationId: entry.id } });
+        } catch (error) {
+          await stepAnnotationHistory(history, 'redo');
+          throw error;
+        }
+        undoEntries.current.pop();
+        if (entry.previousEditor) {
+          const { key, name } = entry.previousEditor;
+          setLastEditors(editors => {
+            const previous = new Map(editors);
+            if (name === undefined) previous.delete(key);
+            else previous.set(key, name);
+            return previous;
+          });
+        }
+        setCard(undefined);
+      } catch (reason) {
+        setError(messageOf(reason));
+      }
+    });
   }
 
   function open(item: Annotation, reveal = false) {
@@ -186,11 +279,15 @@ export function usePdfAnnotations(
 
   function startComment() {
     const anchor = selection.getAnchor();
-    if (anchor) { setError(''); setCard({ anchor }); }
+    if (!anchor) return false;
+    setError('');
+    setCard({ anchor });
+    return true;
   }
 
   return {
-    user, restoring, busy, error, threads, card, open, openAt, startComment, edit,
+    user, restoring, busy, error, threads, card, open, openAt, startComment, edit, undo,
+    hasSelection: () => selection.hasSelection(),
     clearCard: () => { if (!busy) { setCard(undefined); setError(''); } },
     add: (comment: string, color = lastColor.current) => add(color, comment),
     canAdd: !restoring && !busy && annotation.canCreate(),

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { copyFile, mkdir, mkdtemp, readFile, readdir, stat, utimes, writeFile } from 'node:fs/promises';
 import { userInfo } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { _electron } from 'playwright-core';
 import { appArguments, appEnv, electron, electronVersion, root } from './code-oss.mjs';
 import { makeFixtures } from './fixtures.mjs';
@@ -19,6 +19,7 @@ const profileComment = 'Saved only in the PDFUtl profile';
 const originalProfileComment = 'Draft from the annotation card';
 const currentUser = userInfo().username;
 const viewerOnly = process.argv.includes('--viewer');
+const menusOnly = process.argv.includes('--menus');
 const portableArg = process.argv.find(arg => arg.startsWith('--portable='));
 if (portableArg && viewerOnly) throw new Error('Choose either --portable or --viewer');
 const executable = portableArg ? resolve(portableArg.slice('--portable='.length)) : electron;
@@ -41,12 +42,16 @@ try {
   workbench.setDefaultTimeout(25_000);
   workbench.on('pageerror', error => console.error('Renderer:', error.message));
   if (viewerOnly) await verifyWithoutWorkbench(workbench);
-  else {
+  else if (menusOnly) {
+    await workbench.locator('.tab').filter({ hasText: basename(files[0]) }).first().click();
+    await verifyPdfMenus(workbench, await pdfFrame(workbench, basename(files[0])));
+  } else {
     await verifyWithWorkbench(workbench);
     const readingPositions = await setReadingPositions(workbench);
     const layout = await tabLayout(workbench);
     await openLegacyWorkspace();
     await app.close();
+    const openingsBeforeRestart = await recordedOpenings();
     workbench = undefined;
     await seedUntitledWorkspace();
     app = await launch(workbenchArgs());
@@ -54,6 +59,7 @@ try {
     await verifyRestoredSession(workbench, layout);
     await verifyReadingPositions(workbench, readingPositions);
     await verifyProfileAnnotations(workbench, readingPositions.background.group);
+    assert.deepEqual(await recordedOpenings(), openingsBeforeRestart, 'Restoring and activating PDF tabs does not record openings');
     await verifyRestoredTimeline(workbench, readingPositions.background.group);
     await verifyActivityFiles();
     for (const [index, file] of files.entries()) {
@@ -80,6 +86,7 @@ function launch(args) {
 }
 
 async function verifyWithoutWorkbench(page) {
+  await verifyFullscreen(page.mainFrame());
   await verifyPageIndicator(page.mainFrame());
   await verifySearchPanel(page.mainFrame());
   await verifyPdf(page.mainFrame());
@@ -114,13 +121,105 @@ async function verifyWithoutWorkbench(page) {
   console.log('An edit attributed to another user keeps its editor in a newly exported PDF');
 }
 
+async function verifyPdfMenus(workbench, frame) {
+  await waitForImage(frame.locator('[data-pdf-page="1"]'));
+  const menuButtons = workbench.locator('.menubar > .menubar-menu-button');
+  const headings = await menuButtons.evaluateAll(buttons => buttons
+    .map(button => button.getAttribute('aria-label')).filter(label => label && label !== 'More'));
+  assert.deepEqual(headings, ['File', 'Edit', 'View', 'Go', 'Annotations', 'Help']);
+
+  async function choose(menu, label) {
+    const button = workbench.locator(`.menubar > .menubar-menu-button[aria-label="${menu}"]`);
+    const dropdown = button.locator(':scope > .monaco-menu-container');
+    await workbench.locator('.menubar-menu-button.open').waitFor({ state: 'hidden' });
+    await button.locator('.menubar-menu-title').click();
+    const action = dropdown.getByText(label, { exact: true });
+    await action.waitFor();
+    // Code-OSS enables mouse-up actions after the menu opens.
+    await workbench.waitForTimeout(120);
+    await action.click();
+    await dropdown.waitFor({ state: 'hidden' });
+  }
+
+  const input = frame.getByRole('searchbox', { name: 'Find text' });
+  const pin = frame.getByRole('button', { name: 'Pin search panel' });
+  const assertOpenFind = async () => {
+    await input.waitFor();
+    await poll(async () => await pin.getAttribute('aria-pressed') === 'true' &&
+      await input.evaluate(node => node.ownerDocument.activeElement === node), 'Find opens pinned and focuses the input');
+  };
+
+  await choose('Edit', 'Find');
+  await assertOpenFind();
+  await closeSearch(frame);
+  await openPdfTools(frame);
+  await assertOpenFind();
+  await input.fill('LEDGER');
+  await input.press('Enter');
+  await frame.getByText('1 of 3', { exact: true }).waitFor();
+  await choose('Edit', 'Find Next');
+  await frame.getByText('2 of 3', { exact: true }).waitFor();
+  await choose('Edit', 'Find Previous');
+  await frame.getByText('1 of 3', { exact: true }).waitFor();
+  await input.fill('');
+  console.log('Edit > Find and Ctrl+F open and pin the same PDF search, and menu commands navigate its hits');
+
+  await choose('View', 'Actual Size (100%)');
+  const zoom = frame.getByRole('textbox', { name: 'Zoom percent' });
+  await poll(async () => await zoom.inputValue() === '100%', 'PDF actual size from View');
+  await choose('View', 'PDF Zoom In');
+  await poll(async () => Number.parseInt(await zoom.inputValue(), 10) > 100, 'PDF zoom increases from View');
+  await choose('View', 'PDF Zoom Out');
+  await poll(async () => await zoom.inputValue() === '100%', 'PDF zoom decreases from View');
+  await choose('View', 'Fit Page');
+  await closeSearch(frame);
+
+  await choose('Go', 'Go to Page...');
+  const pageInput = frame.getByRole('textbox', { name: 'Page number' });
+  await pageInput.fill('2');
+  await pageInput.press('Enter');
+  await frame.getByRole('button', { name: 'Page 2 of 2. Go to page' }).waitFor();
+  await jumpToPage(frame, 1);
+  await frame.locator('.preview').focus();
+  await workbench.keyboard.press('Control+g');
+  await pageInput.waitFor();
+  await pageInput.press('Escape');
+  console.log('View zoom and Go > Go to Page use the active PDF controls');
+
+  const comments = frame.getByRole('region', { name: 'Comments on current page' });
+  await choose('Annotations', 'Comments on Current Page');
+  await comments.waitFor();
+  await choose('Annotations', 'Comments on Current Page');
+  await comments.waitFor({ state: 'hidden' });
+
+  await selectReviewText(frame, frame.locator('[data-pdf-page="1"]'), 44);
+  await frame.getByRole('toolbar', { name: 'Highlight palette' }).waitFor();
+  await choose('Annotations', 'Add Comment');
+  await frame.getByRole('textbox', { name: 'Comment text' }).waitFor();
+  await frame.getByRole('button', { name: 'Close comment card' }).click();
+  await selectReviewText(frame, frame.locator('[data-pdf-page="1"]'), 44);
+  await frame.getByRole('toolbar', { name: 'Highlight palette' }).waitFor();
+  await choose('Annotations', 'Highlight Selection');
+  await poll(async () => !(await frame.getByRole('toolbar', { name: 'Highlight palette' }).isVisible()),
+    'Marking from the menu consumes the PDF selection');
+  await choose('View', 'PDF Timeline');
+  const timeline = await openTimeline(workbench);
+  const recorded = label => timeline.getByRole('treeitem').filter({ has: workbench.getByText(label, { exact: true }) });
+  await revealTimelineItem(timeline, recorded('Highlight added'));
+  await choose('Edit', 'Undo');
+  await revealTimelineItem(timeline, recorded('Undo · Highlight added'));
+  await closeSearch(frame);
+  console.log('Annotations menu opens current-page comments and reuses the selection palette and comment card');
+}
+
 async function verifyWithWorkbench(workbench) {
-  await app.evaluate(({ dialog }, { destination, folders }) => {
+  await app.evaluate(({ dialog }, { destination, folders, reopen }) => {
+    const targets = [reopen, destination];
     dialog.showSaveDialog = async () => ({ canceled: false, filePath: destination });
     dialog.showOpenDialog = async (windowOrOptions, options = windowOrOptions) => ({
-      canceled: false, filePaths: options.properties.includes('openDirectory') ? folders : [destination],
+      canceled: false, filePaths: options.properties.includes('openDirectory') ? folders : [targets.shift() ?? destination],
     });
-  }, { destination: copyPath, folders: [pinnedFolder, archiveFolder] });
+  }, { destination: copyPath, folders: [pinnedFolder, archiveFolder], reopen: files[1] });
 
   const tab = name => workbench.locator('.editor-group-container .tab').filter({ hasText: name });
   const activeTab = name => tab(name).and(workbench.locator('.editor-group-container.active .tab.active'));
@@ -131,9 +230,27 @@ async function verifyWithWorkbench(workbench) {
 
   await tab(basename(files[0])).first().waitFor();
   await tab(basename(files[1])).first().waitFor();
-  await tab(basename(files[1])).first().click();
-  const second = await pdfFrame(workbench, basename(files[1]));
+  await tab(basename(files[0])).first().click();
+  const initialPdf = await pdfFrame(workbench, basename(files[0]));
+  await verifyDarcula(workbench, initialPdf);
+  await verifyFullscreen(initialPdf, tab(basename(files[0])).first());
+  await verifyAnnotationUndo(workbench);
+  const reopenedName = basename(files[1]);
+  const reopenedTab = tab(reopenedName).first();
+  await reopenedTab.click();
+  await waitForImage((await pdfFrame(workbench, reopenedName)).locator('[data-pdf-page="1"]'));
+  const openingTimeline = await openTimeline(workbench);
+  const openingRows = openingTimeline.getByRole('treeitem').filter({ has: workbench.getByText('Opened', { exact: true }) });
+  await openingRows.waitFor();
+  await reopenedTab.hover();
+  await reopenedTab.locator('.tab-actions .action-label').click();
+  await reopenedTab.waitFor({ state: 'hidden' });
+  await workbench.keyboard.press('Control+o');
+  await reopenedTab.waitFor();
+  const second = await pdfFrame(workbench, reopenedName);
   await waitForImage(second.locator('[data-pdf-page="1"]'));
+  await poll(async () => await openingRows.count() === 2, 'Timeline shows both successful openings of an unchanged PDF');
+  console.log('Timeline records initial and repeated PDF openings even without edits');
   await verifySinglePageSearch(second);
   await addProfileAnnotations(workbench, second);
   await tab(basename(files[0])).first().click();
@@ -187,6 +304,8 @@ async function verifyWithWorkbench(workbench) {
   await verifySearchPanel(frame, selectedTab);
   await verifyPdf(frame);
   await verifyTimelineActionsOnly(timeline);
+  assert.equal((await recordedOpenings()).filter(record => relative(files[0], record.resource) === '').length, 1,
+    'Split panes, tab switches and PDF navigation do not create extra openings');
   assert.equal(await frame.getByRole('button', { name: 'Save PDF copy' }).count(), 0);
   const versions = timeline.getByRole('treeitem', { name: /review-copy\.pdf/ });
   await workbench.getByRole('menubar').getByRole('menuitem', { name: 'File' }).click();
@@ -213,6 +332,190 @@ async function verifyWithWorkbench(workbench) {
   await workbench.screenshot({ path: join(run, 'code-oss.png') });
   await activeTab(basename(copyPath)).dblclick();
   await poll(async () => (await groups()).length === 3, 'Three visible groups before restart');
+}
+
+async function verifyDarcula(workbench, pdf) {
+  const workbenchPalette = await workbench.locator('.monaco-workbench').evaluate(node => {
+    const style = getComputedStyle(node);
+    return ['sideBar-background', 'tab-activeBorder', 'statusBar-noFolderBackground', 'icon-foreground']
+      .map(name => style.getPropertyValue('--vscode-' + name).trim());
+  });
+  assert.deepEqual(workbenchPalette.slice(0, 3), ['#242424', '#0c7d9d', 'rgba(255, 255, 255, 0.1)']);
+  assert.ok(workbenchPalette[3], 'Darcula resolves an icon foreground through Code-OSS');
+  assert.deepEqual(await pdf.locator('.stage').evaluate(() => [
+    document.body.dataset.vscodeThemeId,
+    getComputedStyle(document.documentElement).backgroundColor,
+    getComputedStyle(document.querySelector('.page-paper')).backgroundColor,
+  ]), ['PDFUtl Darcula', 'rgb(36, 36, 36)', 'rgb(255, 255, 255)']);
+  console.log('Darcula is the default for the workbench and PDF chrome, with the original PDF paper color');
+}
+
+async function verifyFullscreen(frame, tab) {
+  const page = frame.page();
+  const preview = frame.locator('.preview');
+  const overlay = frame.getByRole('region', { name: 'PDF search and zoom', includeHidden: true });
+  const find = frame.getByRole('searchbox', { name: 'Find text' });
+  const matches = frame.getByRole('list', { name: 'All matches' });
+  const chevron = frame.getByRole('button', { name: 'Search matches' });
+  const mode = async active => poll(async () => await preview.getAttribute('data-fullscreen') === String(active), `PDF fullscreen is ${active}`);
+  await waitForImage(frame.locator('[data-pdf-page="1"]'));
+  // Keep the pointer out of the preview until there is a deliberate movement.
+  await page.mouse.move(2, 2);
+  await (tab ?? preview).focus();
+  await page.keyboard.press('F11');
+  await mode(true);
+  await poll(async () => {
+    const native = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some(window => window.isFullScreen()));
+    const box = await preview.boundingBox();
+    const [width, height] = await page.evaluate(() => [innerWidth, innerHeight]);
+    return native && box && Math.abs(box.x) <= 1 && Math.abs(box.y) <= 1 &&
+      Math.abs(box.width - width) <= 1 && Math.abs(box.height - height) <= 1;
+  }, 'The PDF itself fills the native fullscreen window');
+  await overlay.waitFor({ state: 'hidden' });
+  const view = await preview.boundingBox();
+  await page.mouse.move(view.x + view.width / 2, view.y + view.height / 2);
+  assert.equal(await overlay.getAttribute('data-visible'), 'false', 'Pointer activity does not reveal the toolbar immediately');
+  await overlay.waitFor();
+  await overlay.waitFor({ state: 'hidden' });
+  await page.mouse.down();
+  await page.mouse.up();
+  await overlay.waitFor();
+
+  await findInPdf(frame, 'LEDGER');
+  await frame.getByText('1 of 3', { exact: true }).waitFor();
+  const grip = await frame.getByRole('button', { name: 'Move PDF toolbar' }).boundingBox();
+  const before = await overlay.boundingBox();
+  assert.ok(before.width <= 620 && before.width < view.width, 'The fullscreen toolbar has a compact width');
+  await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
+  await page.mouse.down();
+  const dx = 94;
+  const dy = Math.round(view.height - before.y - before.height - 26);
+  await page.mouse.move(grip.x + grip.width / 2 + dx, grip.y + grip.height / 2 + dy, { steps: 8 });
+  await page.mouse.up();
+  const moved = await overlay.boundingBox();
+  assert.ok(Math.abs(moved.x - before.x - dx) <= 2 && Math.abs(moved.y - before.y - dy) <= 2,
+    'The toolbar follows the grip');
+
+  await chevron.click();
+  await matches.waitFor();
+  const list = await matches.boundingBox();
+  assert.ok(list.y + list.height < moved.y && list.y >= view.y, 'Matches open above a toolbar moved near the bottom');
+  await matches.getByRole('button').last().click();
+  await frame.getByText('3 of 3', { exact: true }).waitFor();
+  await verifyUncoveredMatch(frame);
+  await frame.getByRole('button', { name: 'Search options' }).click();
+  await frame.getByRole('checkbox', { name: 'Match case' }).check();
+  await frame.getByRole('checkbox', { name: 'Match case' }).uncheck();
+  await frame.getByRole('button', { name: 'Zoom in' }).click();
+  await frame.getByRole('button', { name: 'Fit page' }).click();
+  await frame.getByRole('button', { name: 'Page comments', exact: true }).click();
+  await frame.getByRole('region', { name: 'Comments on current page' }).waitFor();
+  await closePageComments(frame);
+  await jumpToPage(frame, 1);
+
+  await preview.focus();
+  await page.keyboard.press('Escape');
+  await mode(false);
+  assert.equal(await find.inputValue(), 'LEDGER', 'Exiting fullscreen keeps the search query');
+  await preview.focus();
+  await page.keyboard.press('F11');
+  await mode(true);
+  await page.keyboard.press('F11');
+  await mode(false);
+  await find.fill('');
+  await closeSearch(frame);
+  assert.equal(await frame.getByRole('button', { name: 'Move PDF toolbar' }).count(), 0);
+  console.log('F11 PDF fullscreen supports both exits, mouse reveal, toolbar dragging and the complete PDF controls');
+}
+
+async function verifyAnnotationUndo(workbench) {
+  const file = join(run, 'undo-review.pdf');
+  const name = basename(file);
+  const original = 'Comment before undo';
+  const revised = 'Comment edit to undo';
+  await copyFile(files[0], file);
+  await app.evaluate(({ dialog }, path) => {
+    globalThis.pdfutlSmokeOpenDialog = dialog.showOpenDialog;
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path] });
+  }, file);
+
+  const tab = workbench.locator('.editor-group-container .tab').filter({ hasText: name });
+  const open = async () => {
+    await workbench.keyboard.press('Control+o');
+    await tab.waitFor();
+    return pdfFrame(workbench, name);
+  };
+  const close = async () => {
+    await tab.hover();
+    await tab.locator('.tab-actions .action-label').click();
+    await tab.waitFor({ state: 'hidden' });
+  };
+  try {
+    const frame = await open();
+    const page = frame.locator('[data-pdf-page="1"]');
+    const card = frame.getByRole('region', { name: 'Comment card' });
+    await selectReviewText(frame, page, 44);
+    await frame.getByRole('button', { name: 'Highlight blue' }).click();
+    const timeline = await openTimeline(workbench);
+    const event = label => timeline.getByRole('treeitem').filter({ has: workbench.getByText(label, { exact: true }) });
+    await revealTimelineItem(timeline, event('Highlight added'));
+    const box = await page.boundingBox();
+    const textPoint = { x: box.x + 60 * box.width / 440, y: box.y + 44 * box.width / 440 };
+    await workbench.mouse.click(textPoint.x, textPoint.y);
+    await card.getByRole('button', { name: 'Add comment' }).waitFor();
+    await frame.locator('.preview').focus();
+    await workbench.keyboard.press('Control+z');
+    await revealTimelineItem(timeline, event('Undo · Highlight added'));
+    await workbench.mouse.click(textPoint.x, textPoint.y);
+    assert.equal(await card.isVisible(), false, 'Ctrl+Z removes the highlight from the PDF');
+
+    await addReviewComment(frame, page, 96, original);
+    await card.getByRole('button', { name: 'Edit comment' }).click();
+    const field = card.getByRole('textbox', { name: 'Comment text' });
+    await field.press('End');
+    await workbench.keyboard.insertText(' draft');
+    await field.press('Control+z');
+    assert.equal(await field.inputValue(), original, 'Ctrl+Z in a draft undoes text input');
+    await field.fill(revised);
+    await card.getByRole('button', { name: 'Save comment' }).click();
+    await card.getByText(revised, { exact: true }).waitFor();
+
+    await workbench.getByRole('menubar').getByRole('menuitem', { name: 'Edit', exact: true }).click();
+    await workbench.getByRole('menuitem', { name: /^Undo\b/ }).click();
+    await revealTimelineItem(timeline, event(`Undo · Comment edited · ${revised}`));
+    const comments = await openPageComments(frame);
+    await comments.getByText(original, { exact: true }).waitFor();
+    assert.equal(await comments.getByText(revised, { exact: true }).count(), 0, 'Edit → Undo restores the earlier comment');
+    await closePageComments(frame);
+
+    await frame.locator('.preview').focus();
+    const keyboard = await workbench.context().newCDPSession(workbench);
+    try {
+      await keyboard.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', modifiers: 2, code: 'KeyZ', key: 'я', windowsVirtualKeyCode: 0 });
+      await keyboard.send('Input.dispatchKeyEvent', { type: 'keyUp', modifiers: 2, code: 'KeyZ', key: 'я', windowsVirtualKeyCode: 0 });
+    } finally {
+      await keyboard.detach();
+    }
+    const undoneComment = event(`Undo · Comment added · ${original}`);
+    await revealTimelineItem(timeline, undoneComment);
+    await undoneComment.click();
+    await verifyVisibleFragment(frame, 1);
+    await close();
+
+    const reopened = await open();
+    const restoredComments = await openPageComments(reopened);
+    await restoredComments.getByText('No comments on this page.').waitFor();
+    assert.equal(await reopened.getByRole('button', { name: 'Open comment' }).count(), 0);
+    await revealTimelineItem(timeline, event(`Comment added · ${original}`));
+    await revealTimelineItem(timeline, undoneComment);
+    await close();
+    console.log('Ctrl+Z, including Cyrillic, and Edit → Undo revert PDF annotations and keep both Timeline events after reopening');
+  } finally {
+    await app.evaluate(({ dialog }) => {
+      dialog.showOpenDialog = globalThis.pdfutlSmokeOpenDialog;
+      delete globalThis.pdfutlSmokeOpenDialog;
+    });
+  }
 }
 
 async function addProfileAnnotations(workbench, frame) {
@@ -356,8 +659,8 @@ async function revealTimelineItem(timeline, item) {
 }
 
 async function verifyTimelineActionsOnly(timeline) {
-  assert.equal(await timeline.getByRole('treeitem', { name: /^(First opened|Opened|Closed|Searched|Viewed page)\b/ }).count(), 0,
-    'Opening, closing, viewing and searching stay out of Timeline');
+  assert.equal(await timeline.getByRole('treeitem', { name: /^(Closed|Searched|Viewed page)\b/ }).count(), 0,
+    'Closing, viewing and searching stay out of Timeline');
 }
 
 async function verifyTimelineTimestamp(workbench, timeline, versions) {
@@ -446,10 +749,29 @@ async function verifyRestoredTimeline(workbench, group) {
   const newest = await pdfFrame(workbench, basename(copyPath), group);
   await checkReopenedCopy(newest);
   await newest.getByText(revisedComment, { exact: true }).waitFor();
+  await verifyNativeCommentUndo(workbench, newest, timeline);
   await verifyTimelineActionsOnly(timeline);
   await workbench.screenshot({ path: join(run, 'timeline.png') });
   console.log('Timeline restored after restart and opened both exact saved versions with their annotations');
   await verifyRestoredAnnotationEvents(workbench, timeline);
+}
+
+async function verifyNativeCommentUndo(workbench, frame, timeline) {
+  const edited = 'Temporary edit of a native PDF comment';
+  const panel = await openPageComments(frame);
+  await panel.getByRole('button').filter({ hasText: revisedComment }).click();
+  const card = frame.getByRole('region', { name: 'Comment card' });
+  await card.getByRole('button', { name: 'Edit comment' }).click();
+  await card.getByRole('textbox', { name: 'Comment text' }).fill(edited);
+  await card.getByRole('button', { name: 'Save comment' }).click();
+  await card.getByText(edited, { exact: true }).waitFor();
+  await frame.locator('.preview').focus();
+  await workbench.keyboard.press('Control+z');
+  const undone = timeline.getByRole('treeitem').filter({
+    has: workbench.getByText(`Undo · Comment edited · ${edited}`, { exact: true }),
+  });
+  await revealTimelineItem(timeline, undone);
+  await (await openPageComments(frame)).getByText(revisedComment, { exact: true }).waitFor();
 }
 
 async function verifyAnnotationEvents(workbench, frame, timeline) {
@@ -511,15 +833,29 @@ async function verifyRestoredAnnotationEvents(workbench, timeline) {
   console.log('A restored Timeline event opens a closed original PDF directly at its marked fragment');
 }
 
+function historyDirectory() {
+  return join(profile, 'User', 'globalStorage', 'pdfutl.pdfutl-viewer', 'saved-pdf-copies');
+}
+
+async function recordedOpenings() {
+  const directory = historyDirectory();
+  const names = (await readdir(directory)).filter(file => file.startsWith('activity-') && file.endsWith('.json')).sort();
+  return Promise.all(names.map(async file => JSON.parse(await readFile(join(directory, file), 'utf8'))));
+}
+
 async function verifyActivityFiles() {
-  const directory = join(profile, 'User', 'globalStorage', 'pdfutl.pdfutl-viewer', 'saved-pdf-copies');
-  const files = (await readdir(directory)).filter(file => file.endsWith('.json'));
-  const records = await Promise.all(files.map(async file => JSON.parse(await readFile(join(directory, file), 'utf8'))));
+  const directory = historyDirectory();
+  const names = (await readdir(directory)).filter(file => file.endsWith('.json'));
+  const records = await Promise.all(names.map(async file => JSON.parse(await readFile(join(directory, file), 'utf8'))));
   assert.ok(records.length > 0 && records.every(record => record.user === currentUser));
-  for (const kind of ['view', 'comment', 'commentEdited', 'highlight']) {
+  for (const kind of ['view', 'opened', 'comment', 'commentEdited', 'highlight', 'undo']) {
     assert.ok(records.some(record => record.activity?.kind === kind), `Persisted an attributed ${kind} event`);
   }
-  assert.ok(files.every(file => !/^(first-open-|activity-)/.test(file)), 'Read-only activity does not create Timeline records');
+  const originalOperations = new Set(records.filter(record => record.activity?.kind !== 'undo').map(record => record.id));
+  assert.equal(records.filter(record => record.activity?.kind === 'undo' &&
+    originalOperations.has(record.activity.operationId)).length, 4, 'Every undo points to its original persisted operation');
+  assert.ok((await recordedOpenings()).every(record => record.activity?.kind === 'opened'),
+    'The only file interaction written to Timeline is opening');
   const snapshots = records.filter(record => record.exported);
   assert.equal(snapshots.length, 2);
   const marks = records.flatMap(record => record.highlights ?? []);
@@ -1238,9 +1574,11 @@ async function verifyPdf(frame) {
   await verifyUncoveredMatch(frame);
   assert.deepEqual(await readingPosition(frame), beforeVisibleMatch, 'Enter leaves the PDF in place when the next match is already visible');
 
-  for (const dismiss of [() => chevron.click(), () => find.press('Escape')]) {
+  for (const dismiss of [() => chevron.click(), () => find.press('Escape'), () => rows.first().press('Escape'),
+    () => frame.locator('.preview').press('Escape')]) {
     await dismiss();
     await matches.waitFor({ state: 'hidden' });
+    assert.equal(await find.inputValue(), 'LEDGER', 'Closing results keeps the search query');
     assert.deepEqual(await readingPosition(frame), beforeVisibleMatch, 'Closing results preserves the PDF position set by Enter');
     await chevron.click();
     await matches.waitFor();
@@ -1288,14 +1626,16 @@ async function verifyPdf(frame) {
 
   const pageImage = frame.locator('[data-pdf-page="1"]');
   await waitForImage(pageImage);
+  const highlightPaints = await searchHighlightPaints(frame);
+  assert.notEqual(highlightPaints.active.style, highlightPaints.other.style);
   await poll(async () => {
     const colors = await pageImage.evaluate(node => Array.from(node.querySelectorAll('.search-background div > div, .search-background polygon')).map(shape => {
       const style = getComputedStyle(shape);
       return [style.backgroundColor, style.fill];
     }).flat());
-    return colors.includes('rgb(188, 255, 56)') && colors.includes('rgb(255, 139, 33)');
+    return Object.values(highlightPaints).every(paint => colors.includes(paint.style));
   }, 'Both match colors painted on page');
-  await checkHighlightPixels(frame, pageImage);
+  await checkHighlightPixels(frame, pageImage, highlightPaints);
   await find.press('Escape');
   assert.equal(await frame.getByRole('button', { name: 'Pin search panel' }).getAttribute('aria-pressed'), 'true');
   await closeSearch(frame);
@@ -1308,8 +1648,9 @@ async function verifyPdf(frame) {
   await openPdfTools(frame);
   await frame.getByRole('button', { name: 'Zoom out' }).click();
   await poll(async () => Number.parseInt(await zoomField.inputValue(), 10) < Number.parseInt(searchZoom, 10), 'Zoom out from the floating panel');
+  const zoomedOut = Number.parseInt(await zoomField.inputValue(), 10);
   await frame.getByRole('button', { name: 'Zoom in' }).click();
-  await poll(async () => await zoomField.inputValue() === searchZoom, 'Zoom in from the floating panel');
+  await poll(async () => Number.parseInt(await zoomField.inputValue(), 10) > zoomedOut, 'Zoom in from the floating panel');
   for (const percent of ['25', '4000']) {
     await zoomField.fill(percent);
     await poll(async () => await zoomField.inputValue() === percent, `Typed zoom ${percent}%`);
@@ -1334,19 +1675,20 @@ async function verifyPdf(frame) {
 }
 
 async function verifyUncoveredMatch(frame, { allowClipping = false } = {}) {
-  await poll(() => frame.evaluate(allowClipping => {
+  const { active } = await searchHighlightPaints(frame);
+  await poll(() => frame.evaluate(({ allowClipping, active }) => {
     const stage = document.querySelector('.stage').getBoundingClientRect();
     const bar = document.querySelector('.search-overlay').getBoundingClientRect();
     const list = document.querySelector('.search-results').getBoundingClientRect();
     const match = Array.from(document.querySelectorAll('.search-background div > div'))
-      .find(node => getComputedStyle(node).backgroundColor === 'rgb(255, 139, 33)');
+      .find(node => getComputedStyle(node).backgroundColor === active);
     if (!list.height || !match) return false;
     const { top, bottom, left, right } = match.getBoundingClientRect();
     const disjoint = box => left >= box.right || right <= box.left || top >= box.bottom || bottom <= box.top;
     if (!disjoint(bar) || !disjoint(list)) return false;
     if (allowClipping) return top < stage.bottom && bottom > stage.top && right > stage.left && left < stage.right;
     return top >= stage.top && bottom <= stage.bottom && left >= stage.left && right <= stage.right;
-  }, allowClipping), 'The orange PDF match is visible with the results open');
+  }, { allowClipping, active: active.style }), 'The current PDF match is visible with the results open');
 }
 
 async function addReviewComment(frame, pageImage, y, text) {
@@ -1370,17 +1712,39 @@ async function selectReviewText(frame, pageImage, y) {
   await mouse.up();
 }
 
-async function checkHighlightPixels(frame, pageImage) {
+async function searchHighlightPaints(frame) {
+  return frame.evaluate(() => {
+    const probe = document.createElement('span');
+    document.body.append(probe);
+    const context = new OffscreenCanvas(1, 1).getContext('2d');
+    const sample = variable => {
+      probe.style.backgroundColor = `var(${variable})`;
+      const style = getComputedStyle(probe).backgroundColor;
+      context.fillStyle = 'white';
+      context.fillRect(0, 0, 1, 1);
+      context.fillStyle = style;
+      context.fillRect(0, 0, 1, 1);
+      return { style, rgb: [...context.getImageData(0, 0, 1, 1).data.slice(0, 3)] };
+    };
+    const paints = {
+      active: sample('--epdf-search-highlight-active'),
+      other: sample('--epdf-search-highlight'),
+    };
+    probe.remove();
+    return paints;
+  });
+}
+
+async function checkHighlightPixels(frame, pageImage, paints) {
   const matchShapes = pageImage.locator('.search-background div > div, .search-background polygon');
   const visible = frame.page().viewportSize() ?? await frame.page().evaluate(() => ({ width: innerWidth, height: innerHeight }));
-  for (const [red, green, blue] of [[255, 139, 33], [188, 255, 56]]) {
-    const rgb = `rgb(${red}, ${green}, ${blue})`;
+  for (const { style, rgb } of Object.values(paints)) {
     let clip;
     for (const shape of await matchShapes.all()) {
       const matches = await shape.evaluate((node, color) => {
         const style = getComputedStyle(node);
         return style.fill === color || style.backgroundColor === color;
-      }, rgb);
+      }, style);
       if (!matches) continue;
       const box = await shape.boundingBox();
       if (box && box.y >= 0 && box.x >= 0 && box.y + box.height <= visible.height && box.x + box.width <= visible.width) {
@@ -1388,7 +1752,7 @@ async function checkHighlightPixels(frame, pageImage) {
         break;
       }
     }
-    assert.ok(clip, `Visible highlight shape ${rgb}`);
+    assert.ok(clip, `Visible highlight shape ${style}`);
     const screenshot = await frame.page().screenshot({ clip });
     const pixels = await frame.evaluate(async ({ bytes, rgb }) => {
       const bitmap = await createImageBitmap(new Blob([new Uint8Array(bytes)], { type: 'image/png' }));
@@ -1403,8 +1767,8 @@ async function checkHighlightPixels(frame, pageImage) {
         if (data[i] < 20 && data[i + 1] < 20 && data[i + 2] < 20) black++;
       }
       return { color, black };
-    }, { bytes: Array.from(screenshot), rgb: [red, green, blue] });
-    assert.ok(pixels.color > 0 && pixels.black > 0, `${rgb} must coexist with black glyph pixels: ${JSON.stringify(pixels)}`);
+    }, { bytes: Array.from(screenshot), rgb });
+    assert.ok(pixels.color > 0 && pixels.black > 0, `${style} must coexist with black glyph pixels: ${JSON.stringify(pixels)}`);
   }
 }
 

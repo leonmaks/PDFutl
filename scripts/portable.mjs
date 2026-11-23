@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { pathToFileURL } from 'node:url';
-import { defaultSettings, electronVersion, root } from './code-oss.mjs';
+import { defaultSettings, electronVersion, productDisplay, root } from './code-oss.mjs';
 
 const targets = {
   win32: {
@@ -85,9 +85,8 @@ try {
   });
   await writeJson(join(app, 'product.json'), {
     ...product,
+    ...productDisplay,
     version: upstreamPkg.version,
-    nameShort: 'PDFUtl',
-    nameLong: 'PDFUtl',
     applicationName: 'pdfutl',
     dataFolderName: '.pdfutl',
     sharedDataFolderName: '.pdfutl-shared',
@@ -95,7 +94,6 @@ try {
     win32AppUserModelId: 'PDFUtl',
     linuxDesktopName: 'pdfutl',
     urlProtocol: 'pdfutl',
-    reportIssueUrl: 'https://github.com/leonmaks/PDFUtl/issues/new',
     builtInExtensions: [],
   });
 
