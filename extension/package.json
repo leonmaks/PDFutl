@@ -2,7 +2,7 @@
   "name": "pdfutl-viewer",
   "displayName": "PDF Viewer",
   "publisher": "pdfutl",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "engines": { "vscode": "^1.105.0" },
   "main": "./dist/host.cjs",
   "activationEvents": ["onStartupFinished", "onCustomEditor:pdfutl.viewer"],
@@ -29,7 +29,7 @@
         { "command": "pdfutl.refreshPinnedFolders", "when": "view == pdfutl.pinnedFolders", "group": "navigation@2" }
       ],
       "view/item/context": [
-        { "command": "pdfutl.unpinFolder", "when": "view == pdfutl.pinnedFolders && viewItem == pdfutl.pinnedRoot", "group": "inline" }
+        { "command": "pdfutl.unpinFolder", "when": "view == pdfutl.pinnedFolders && viewItem =~ /^pdfutl[.]pinnedRoot:/", "group": "inline@4" }
       ],
       "commandPalette": [
         { "command": "pdfutl.unpinFolder", "when": "false" }

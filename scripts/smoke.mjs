@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { copyFile, mkdir, mkdtemp, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, readdir, stat, utimes, writeFile } from 'node:fs/promises';
 import { userInfo } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { _electron } from 'playwright-core';
@@ -12,6 +12,7 @@ const run = await mkdtemp(join(root, '.smoke', 'run-'));
 const files = await makeFixtures(join(run, 'documents'));
 const originalBytes = await Promise.all(files.map(file => readFile(file)));
 const pinnedFolder = dirname(files[0]);
+const archiveFolder = join(run, 'Archive');
 const copyPath = join(run, 'review-copy.pdf');
 const revisedComment = 'Second annotation version';
 const profileComment = 'Saved only in the PDFUtl profile';
@@ -41,7 +42,7 @@ try {
   workbench.on('pageerror', error => console.error('Renderer:', error.message));
   if (viewerOnly) await verifyWithoutWorkbench(workbench);
   else {
-    const firstOpening = await verifyWithWorkbench(workbench);
+    await verifyWithWorkbench(workbench);
     const readingPositions = await setReadingPositions(workbench);
     const layout = await tabLayout(workbench);
     await openLegacyWorkspace();
@@ -53,7 +54,7 @@ try {
     await verifyRestoredSession(workbench, layout);
     await verifyReadingPositions(workbench, readingPositions);
     await verifyProfileAnnotations(workbench, readingPositions.background.group);
-    await verifyRestoredTimeline(workbench, readingPositions.background.group, firstOpening);
+    await verifyRestoredTimeline(workbench, readingPositions.background.group);
     await verifyActivityFiles();
     for (const [index, file] of files.entries()) {
       assert.deepEqual(await readFile(file), originalBytes[index], 'Autosaving annotations preserves the original PDF bytes');
@@ -114,12 +115,12 @@ async function verifyWithoutWorkbench(page) {
 }
 
 async function verifyWithWorkbench(workbench) {
-  await app.evaluate(({ dialog }, { destination, folder }) => {
+  await app.evaluate(({ dialog }, { destination, folders }) => {
     dialog.showSaveDialog = async () => ({ canceled: false, filePath: destination });
     dialog.showOpenDialog = async (windowOrOptions, options = windowOrOptions) => ({
-      canceled: false, filePaths: [options.properties.includes('openDirectory') ? folder : destination],
+      canceled: false, filePaths: options.properties.includes('openDirectory') ? folders : [destination],
     });
-  }, { destination: copyPath, folder: pinnedFolder });
+  }, { destination: copyPath, folders: [pinnedFolder, archiveFolder] });
 
   const tab = name => workbench.locator('.editor-group-container .tab').filter({ hasText: name });
   const activeTab = name => tab(name).and(workbench.locator('.editor-group-container.active .tab.active'));
@@ -133,16 +134,17 @@ async function verifyWithWorkbench(workbench) {
   await tab(basename(files[1])).first().click();
   const second = await pdfFrame(workbench, basename(files[1]));
   await waitForImage(second.locator('[data-pdf-page="1"]'));
+  await verifySinglePageSearch(second);
   await addProfileAnnotations(workbench, second);
   await tab(basename(files[0])).first().click();
   await waitForImage((await pdfFrame(workbench, basename(files[0]))).locator('[data-pdf-page="1"]'));
   console.log('Two local PDFs opened from CLI');
   await assertDocumentLayout(workbench);
   await verifyNavigator(workbench);
+  await verifyIndependentZoom(workbench, await pdfFrame(workbench, basename(files[0])));
   await verifyOutline(workbench);
   const timeline = await openTimeline(workbench);
-  const firstOpening = await readFirstOpening(timeline);
-  console.log('Timeline shows the first opening before any PDF copies are saved');
+  await verifyTimelineActionsOnly(timeline);
 
   await splitTab(activeTab(basename(files[0])), workbench, 'Right');
   await poll(async () => (await groups()).length === 2, 'Two editor groups after Split Right');
@@ -184,7 +186,7 @@ async function verifyWithWorkbench(workbench) {
   await verifyPageIndicator(frame);
   await verifySearchPanel(frame, selectedTab);
   await verifyPdf(frame);
-  assert.equal(await timeline.getByRole('treeitem', { name: /^Viewed page/ }).count(), 0, 'Viewing activity stays out of Timeline');
+  await verifyTimelineActionsOnly(timeline);
   assert.equal(await frame.getByRole('button', { name: 'Save PDF copy' }).count(), 0);
   const versions = timeline.getByRole('treeitem', { name: /review-copy\.pdf/ });
   await workbench.getByRole('menubar').getByRole('menuitem', { name: 'File' }).click();
@@ -199,7 +201,6 @@ async function verifyWithWorkbench(workbench) {
   await workbench.keyboard.press('Control+Shift+s');
   await expectSavedPdf(frame);
   await revealTimelineItem(timeline, versions.filter({ has: workbench.getByText(`v2 · ${currentUser}`, { exact: true }) }));
-  assert.equal(await readFirstOpening(timeline), firstOpening);
   await verifyTimelineTimestamp(workbench, timeline, versions);
   console.log('Timeline updates after each save, including an overwrite of the exported PDF');
   await verifyAnnotationEvents(workbench, frame, timeline);
@@ -212,7 +213,6 @@ async function verifyWithWorkbench(workbench) {
   await workbench.screenshot({ path: join(run, 'code-oss.png') });
   await activeTab(basename(copyPath)).dblclick();
   await poll(async () => (await groups()).length === 3, 'Three visible groups before restart');
-  return firstOpening;
 }
 
 async function addProfileAnnotations(workbench, frame) {
@@ -355,16 +355,9 @@ async function revealTimelineItem(timeline, item) {
   await item.waitFor();
 }
 
-async function readFirstOpening(timeline) {
-  const opening = timeline.getByRole('treeitem', { name: /First opened/ })
-    .filter({ has: timeline.page().getByText('First opened', { exact: true }) });
-  await revealTimelineItem(timeline, opening.first());
-  await opening.getByText(currentUser, { exact: true }).waitFor();
-  assert.equal(await opening.count(), 1);
-  const date = (await opening.locator('.pdfutl-timeline-date').textContent()).trim();
-  assert.match(date, /^\d{2}\.\d{2}\.\d{2} \d{2}:\d{2}:\d{2}$/);
-  await timeline.locator('.monaco-list').first().press('Home');
-  return date;
+async function verifyTimelineActionsOnly(timeline) {
+  assert.equal(await timeline.getByRole('treeitem', { name: /^(First opened|Opened|Closed|Searched|Viewed page)\b/ }).count(), 0,
+    'Opening, closing, viewing and searching stay out of Timeline');
 }
 
 async function verifyTimelineTimestamp(workbench, timeline, versions) {
@@ -421,7 +414,7 @@ async function moveSidebarDivider(workbench, offset) {
   await workbench.mouse.move(350, 10);
 }
 
-async function verifyRestoredTimeline(workbench, group, firstOpening) {
+async function verifyRestoredTimeline(workbench, group) {
   const timeline = await openTimeline(workbench);
   const versions = timeline.getByRole('treeitem', { name: /review-copy\.pdf/ });
   const original = tabInGroup(workbench, group, basename(files[0]));
@@ -430,12 +423,12 @@ async function verifyRestoredTimeline(workbench, group, firstOpening) {
   const second = versions.filter({ has: workbench.getByText(`v2 · ${currentUser}`, { exact: true }) });
   await revealTimelineItem(timeline, first);
   await revealTimelineItem(timeline, second);
-  assert.equal(await readFirstOpening(timeline), firstOpening);
+  await verifyTimelineActionsOnly(timeline);
 
   await tabInGroup(workbench, group, basename(files[1])).click();
   await first.waitFor({ state: 'hidden' });
   assert.equal(await versions.count(), 0);
-  await readFirstOpening(timeline);
+  await verifyTimelineActionsOnly(timeline);
 
   await original.click();
   await revealTimelineItem(timeline, first);
@@ -453,7 +446,7 @@ async function verifyRestoredTimeline(workbench, group, firstOpening) {
   const newest = await pdfFrame(workbench, basename(copyPath), group);
   await checkReopenedCopy(newest);
   await newest.getByText(revisedComment, { exact: true }).waitFor();
-  assert.equal(await readFirstOpening(timeline), firstOpening);
+  await verifyTimelineActionsOnly(timeline);
   await workbench.screenshot({ path: join(run, 'timeline.png') });
   console.log('Timeline restored after restart and opened both exact saved versions with their annotations');
   await verifyRestoredAnnotationEvents(workbench, timeline);
@@ -523,16 +516,17 @@ async function verifyActivityFiles() {
   const files = (await readdir(directory)).filter(file => file.endsWith('.json'));
   const records = await Promise.all(files.map(async file => JSON.parse(await readFile(join(directory, file), 'utf8'))));
   assert.ok(records.length > 0 && records.every(record => record.user === currentUser));
-  for (const kind of ['opened', 'closed', 'search', 'view', 'comment', 'commentEdited', 'highlight']) {
+  for (const kind of ['view', 'comment', 'commentEdited', 'highlight']) {
     assert.ok(records.some(record => record.activity?.kind === kind), `Persisted an attributed ${kind} event`);
   }
+  assert.ok(files.every(file => !/^(first-open-|activity-)/.test(file)), 'Read-only activity does not create Timeline records');
   const snapshots = records.filter(record => record.exported);
   assert.equal(snapshots.length, 2);
   const marks = records.flatMap(record => record.highlights ?? []);
   assert.ok(marks.some(mark => mark.color.toLowerCase() === '#c4a4ff'));
   assert.ok(marks.every(mark => mark.attribution?.author === currentUser));
   assert.ok(marks.some(mark => mark.contents === profileComment && mark.attribution.modifiedBy === currentUser));
-  console.log('The Windows user is recorded on every PDF history entry, including view position, searches, colors and edits');
+  console.log('The Windows user is recorded on PDF history entries, including view positions, colors and edits');
 }
 
 async function verifyVisibleFragment(frame, pageNumber, previousPosition) {
@@ -609,13 +603,81 @@ async function verifyNavigator(workbench) {
 
   const nested = join(pinnedFolder, 'Reference');
   await mkdir(nested);
+  await mkdir(archiveFolder);
   await copyFile(files[1], join(nested, 'Nested.PDF'));
+  await copyFile(files[1], join(nested, 'Older.pdf'));
   await writeFile(join(nested, 'Notes.txt'), 'Excluded from the PDF navigator');
-  const pinned = heading('Pinned Folders').locator('..');
+  const older = new Date(2025, 5, 1, 10, 5, 45);
+  const newer = new Date(2025, 5, 2, 10, 5, 45);
+  for (const path of [archiveFolder, files[0], join(nested, 'Older.pdf')]) await utimes(path, older, older);
+  for (const path of [pinnedFolder, files[1], join(nested, 'Nested.PDF')]) await utimes(path, newer, newer);
+
+  const header = heading('Pinned Folders');
+  const pinned = header.locator('..');
+  await header.hover();
   await pinned.getByRole('button', { name: 'Pin Folder…' }).last().click();
-  await pinned.getByRole('treeitem', { name: basename(pinnedFolder) }).click();
-  await pinned.getByRole('treeitem', { name: 'Reference' }).click();
-  await pinned.getByRole('treeitem', { name: 'Nested.PDF' }).click();
+  const row = name => pinned.getByRole('treeitem').filter({ has: workbench.getByText(name, { exact: true }) });
+  const namesAtLevel = level => pinned.locator(`[role="treeitem"][aria-level="${level}"] .label-name`).allTextContents();
+  const checkOrder = async (level, names, label) => {
+    await poll(async () => JSON.stringify(await namesAtLevel(level)) === JSON.stringify(names), label);
+  };
+  const documents = row(basename(pinnedFolder));
+  const archive = row(basename(archiveFolder));
+  const reference = row('Reference');
+  const date = '.pdfutl-pinned-date';
+  await checkOrder(1, ['Archive', 'documents'], 'Pinned roots sort by name');
+  await workbench.mouse.move(350, 10);
+  assert.equal(await header.getByRole('button', { name: /Sorted by name/ }).isVisible(), false);
+  await header.hover();
+  await header.getByRole('button', { name: /Sorted by name · A–Z/ }).click();
+  await checkOrder(1, ['documents', 'Archive'], 'Pinned roots reverse name order');
+  await header.getByRole('button', { name: /Sort by date/ }).click();
+  await checkOrder(1, ['Archive', 'documents'], 'Pinned roots sort oldest first');
+  await header.getByRole('button', { name: /Sorted by date · Oldest first/ }).click();
+  await checkOrder(1, ['documents', 'Archive'], 'Pinned roots sort newest first');
+  await documents.locator('.monaco-tl-twistie').click();
+  await checkOrder(2, ['Reference', 'Review A.pdf', 'Review B.pdf'], 'Folder starts with its own name sort');
+  await documents.hover();
+  await documents.getByRole('button', { name: /Sorted by name · A–Z/ }).click();
+  await checkOrder(2, ['Reference', 'Review B.pdf', 'Review A.pdf'], 'Folder reverses its name sort');
+  await documents.getByRole('button', { name: /Sort by date/ }).click();
+  await checkOrder(2, ['Reference', 'Review A.pdf', 'Review B.pdf'], 'Folder sorts oldest first');
+  await documents.getByRole('button', { name: /Sorted by date · Oldest first/ }).click();
+  await checkOrder(2, ['Reference', 'Review B.pdf', 'Review A.pdf'], 'Folder sorts newest first');
+  await reference.locator('.monaco-tl-twistie').click();
+  await checkOrder(3, ['Nested.PDF', 'Older.pdf'], 'Nested folder keeps an independent sort');
+  await reference.hover();
+  await reference.getByRole('button', { name: /Sort by date/ }).click();
+  await checkOrder(3, ['Older.pdf', 'Nested.PDF'], 'Nested folder changes its own sort');
+  const dates = pinned.locator(`${date}:visible`);
+  const edges = await dates.evaluateAll(elements => elements.map(element => element.getBoundingClientRect().right));
+  assert.ok(edges.length >= 6 && Math.max(...edges) - Math.min(...edges) <= 1, 'Dates align at the right edge across levels');
+  assert.equal(await archive.locator(date).textContent(), '25.06.01 10:05:45');
+  const wide = (await sidebar.boundingBox()).width;
+  await moveSidebarDivider(workbench, Math.round(172 - wide));
+  await documents.hover();
+  const narrowDate = await documents.locator(date).evaluate(element => {
+    const row = element.closest('.monaco-list-row').getBoundingClientRect();
+    const text = document.createRange();
+    text.selectNodeContents(element.firstElementChild);
+    return { row: row.toJSON(), lines: Array.from(text.getClientRects(), rect => rect.toJSON()) };
+  });
+  assert.ok(narrowDate.lines.length > 0 && narrowDate.lines.every(rect =>
+    rect.left >= narrowDate.row.left && rect.right <= narrowDate.row.right &&
+    rect.top >= narrowDate.row.top - 2 && rect.bottom <= narrowDate.row.bottom + 2),
+  `Timestamp stays visible beside hover actions in a narrow sidebar: ${JSON.stringify(narrowDate)}`);
+  await moveSidebarDivider(workbench, Math.round(wide - (await sidebar.boundingBox()).width));
+  await reference.hover();
+  await reference.getByRole('button', { name: 'Hide modification dates' }).click();
+  await row('Nested.PDF').locator(date).waitFor({ state: 'hidden' });
+  await archive.locator(date).waitFor();
+  await header.hover();
+  await header.getByRole('button', { name: 'Hide modification dates' }).click();
+  await archive.locator(date).waitFor({ state: 'hidden' });
+  await header.getByRole('button', { name: 'Show modification dates' }).click();
+  await archive.locator(date).waitFor();
+  assert.equal(await row('Nested.PDF').locator(date).isVisible(), false);
+  await row('Nested.PDF').click();
   await waitForImage((await pdfFrame(workbench, 'Nested.PDF')).locator('[data-pdf-page="1"]'));
   assert.equal(await pinned.getByText('Notes.txt', { exact: true }).count(), 0);
   const nestedTab = workbench.locator('.editor-group-container .tab').filter({ hasText: 'Nested.PDF' });
@@ -625,13 +687,21 @@ async function verifyNavigator(workbench) {
   await workbench.locator('.editor-group-container.active .tab.active').filter({ hasText: basename(files[0]) }).waitFor();
   await workbench.mouse.move(350, 10);
   await workbench.screenshot({ path: join(run, 'navigator.png') });
-  console.log('Native Open Editors, pinned PDF folders and Ctrl+B in English and Russian');
+  console.log('Pinned roots, folders and nested folders have independent sort controls and right-aligned date toggles');
 }
 
 async function unpinRestoredFolder(workbench) {
   const folder = workbench.locator('.part.sidebar').getByRole('treeitem')
     .filter({ has: workbench.getByText(basename(pinnedFolder), { exact: true }) });
   await folder.waitFor();
+  await folder.locator('.pdfutl-pinned-date').waitFor();
+  await folder.hover();
+  await folder.getByRole('button', { name: /Sorted by date · Newest first/ }).waitFor();
+  const header = workbench.locator('.part.sidebar .pane-header').filter({
+    has: workbench.getByRole('heading', { name: 'Pinned Folders', exact: true }),
+  });
+  await header.hover();
+  await header.getByRole('button', { name: /Sorted by date · Newest first/ }).waitFor();
   await folder.hover();
   await folder.getByRole('button', { name: 'Unpin Folder' }).click();
   await folder.waitFor({ state: 'hidden' });
@@ -712,7 +782,7 @@ async function setReadingPosition(workbench, group, name, page, zoom, scrollX, s
 
 function readingPosition(frame) {
   return frame.evaluate(() => {
-    const page = Number(document.querySelector('.page-indicator')?.dataset.currentPage);
+    const page = Number(document.querySelector('.page-indicator')?.dataset.currentPage ?? 1);
     const view = document.querySelector('.stage');
     const paper = view?.querySelector(`[data-pdf-page="${page}"]`);
     if (!paper) return null;
@@ -864,6 +934,57 @@ async function findInPdf(frame, text) {
   if (await field.inputValue() === text) await field.fill('');
   await field.fill(text);
   await field.press('Enter');
+}
+
+async function verifySinglePageSearch(frame) {
+  assert.equal(await frame.getByRole('form', { name: 'Current page' }).count(), 0);
+  await findInPdf(frame, 'LEDGER');
+  await frame.getByText('1 of 1', { exact: true }).waitFor();
+  await frame.getByRole('button', { name: 'Search matches' }).click();
+  const matches = frame.getByRole('list', { name: 'All matches' });
+  await matches.getByRole('button').waitFor();
+  assert.equal(await matches.getByText('Page 1', { exact: true }).count(), 0);
+  await closeSearch(frame);
+}
+
+async function verifyIndependentZoom(workbench, frame) {
+  const measureWorkbench = () => workbench.evaluate(() => devicePixelRatio);
+  const measurePdf = () => frame.evaluate(() => {
+    const page = document.querySelector('.page-paper').getBoundingClientRect();
+    return { width: page.width * devicePixelRatio, zoom: document.querySelector('.zoom-value').value };
+  });
+  const wheel = async (target, delta) => {
+    await target.hover();
+    await workbench.keyboard.down('Control');
+    try {
+      await workbench.mouse.wheel(0, delta);
+    } finally {
+      await workbench.keyboard.up('Control');
+    }
+  };
+  await openPdfTools(frame);
+  const field = frame.getByRole('textbox', { name: 'Zoom percent' });
+  await field.fill('100');
+  await field.press('Enter');
+  await poll(async () => (await measurePdf()).zoom === '100%', 'Set a fixed PDF zoom');
+  const before = await measurePdf();
+  const baseScale = await measureWorkbench();
+  const header = workbench.getByRole('heading', { name: 'Pinned Folders', exact: true });
+  await wheel(header, -120);
+  await poll(async () => await measureWorkbench() > baseScale, 'Ctrl+wheel over the navigator enlarges the interface');
+  const enlargedScale = await measureWorkbench();
+  await poll(async () => {
+    const after = await measurePdf();
+    return after.zoom === before.zoom && Math.abs(after.width - before.width) < 2;
+  }, 'Interface zoom preserves both the PDF zoom and the apparent size of the page');
+  await wheel(frame.locator('.stage'), -120);
+  await poll(async () => (await measurePdf()).width > before.width + 5, 'Ctrl+wheel over the preview zooms the PDF');
+  assert.equal(await measureWorkbench(), enlargedScale);
+  await wheel(header, 120);
+  await poll(async () => await measureWorkbench() === baseScale, 'Ctrl+wheel zooms the interface back out');
+  await frame.getByRole('button', { name: 'Fit page' }).click();
+  await closeSearch(frame);
+  console.log('Ctrl+wheel scales the workbench and the PDF preview independently');
 }
 
 async function verifyPageIndicatorPosition(frame) {

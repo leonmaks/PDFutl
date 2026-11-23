@@ -3,7 +3,6 @@ import { StageToken } from '@embedpdf/plugin-stage/contract/host';
 import { useCapability } from '@embedpdf/react/runtime';
 import { useSearch, useSearchHits, useSearchState, type SearchHit } from '@embedpdf/react/search';
 import { useStageState } from '@embedpdf/react/stage';
-import type { PdfInteraction } from './pdfAnnotationActivity';
 import { CommentIcon } from './pdfAnnotations';
 
 const showDelay = 200;
@@ -72,12 +71,13 @@ function ZoomControls() {
   </div>;
 }
 
-export function PdfSearch({ ref, children, onSearch, pageComments, onToggleComments, onCloseComments }: {
-  ref: Ref<PdfSearchHandle>; children: ReactNode; onSearch: (activity: Extract<PdfInteraction, { kind: 'search' }>) => void;
+export function PdfSearch({ ref, children, pageComments, onToggleComments, onCloseComments }: {
+  ref: Ref<PdfSearchHandle>; children: ReactNode;
   pageComments?: ReactNode; onToggleComments: () => void; onCloseComments: () => void;
 }) {
   const search = useSearch();
   const stage = useCapability(StageToken);
+  const multiplePages = useStageState(state => state.pageCount > 1);
   const hits = useSearchHits();
   const active = useSearchState(state => state.activeHitIndex);
   const status = useSearchState(state => state.status);
@@ -181,10 +181,9 @@ export function PdfSearch({ ref, children, onSearch, pageComments, onToggleComme
 
   const move = useCallback((step: SearchStep) => {
     if (!query) return;
-    onSearch({ kind: 'search', query, matchCase, wholeWord, regex });
     navigation.current.moves.push(step);
     drainMoves();
-  }, [drainMoves, matchCase, onSearch, query, regex, wholeWord]);
+  }, [drainMoves, query]);
 
   useLayoutEffect(() => {
     const run: SearchRun = { running: Boolean(query), revealed: false, moves: [] };
@@ -407,7 +406,7 @@ export function PdfSearch({ ref, children, onSearch, pageComments, onToggleComme
                   navigation.current.moves.length = 0;
                   goToResult(hit, index);
                 }}>
-                <span className="muted">Page {hit.pageIndex + 1}</span>
+                {multiplePages && <span className="muted">Page {hit.pageIndex + 1}</span>}
                 {hit.snippet && <span>{hit.snippet.before}<mark>{hit.snippet.match}</mark>{hit.snippet.after}</span>}
               </button>
             </li>)}

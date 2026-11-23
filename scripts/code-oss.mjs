@@ -93,6 +93,8 @@ function prepare() {
   restoreSidebarActions();
   prepareEditorSplitFrames();
   preparePdfTimelinePresentation();
+  preparePdfPinnedFolders();
+  preparePdfWindowZoom();
   patchCodeOssSource('workbench/contrib/customEditor/browser/customEditorInput.ts', source => {
     if (source.includes("'pdfutl.saveAs'")) return source;
     return source
@@ -183,6 +185,97 @@ function prepare() {
     .replace('private async doGetPathsFromLastSession():', 'private async doGetPathsFromLastSession(onlyDocumentWindows = false):')
     .replace(/(lastSessionWindows\.map\(async lastSessionWindow => \{)(\r?\n)(?!\t{5}if \(onlyDocumentWindows)/,
       '$1$2\t\t\t\t\tif (onlyDocumentWindows && (lastSessionWindow.workspace || lastSessionWindow.folderUri || lastSessionWindow.remoteAuthority)) {$2\t\t\t\t\t\treturn undefined;$2\t\t\t\t\t}$2'));
+}
+
+function preparePdfPinnedFolders() {
+  const viewsDir = 'workbench/browser/parts/views';
+  for (const [source, target] of [['pdfPinnedFolders.ts', 'pdfPinnedFolders.ts'], ['pdfPinnedFolders.css', 'media/pdfPinnedFolders.css']]) {
+    const contents = readFileSync(join(root, 'workbench', source));
+    const to = join(codeOss, 'src', 'vs', viewsDir, target);
+    if (!existsSync(to) || !contents.equals(readFileSync(to))) writeFileSync(to, contents);
+  }
+  patchCodeOssSource(`${viewsDir}/treeView.ts`, source => {
+    if (source.includes('pdfPinnedFoldersViewId')) return source;
+    return source
+      .replace("import * as DOM from '../../../../base/browser/dom.js';", `import * as DOM from '../../../../base/browser/dom.js';
+import { pdfPinnedFoldersViewId } from './pdfPinnedFolders.js';`)
+      .replace('export class TreeViewPane extends ViewPane {', `export class TreeViewPane extends ViewPane {
+
+	protected override renderHeader(container: HTMLElement): void {
+		super.renderHeader(container);
+		container.classList.toggle('pdfutl-pinned-header', this.id === pdfPinnedFoldersViewId);
+	}`)
+      .replace('identityProvider: new TreeViewIdentityProvider(),', `identityProvider: new TreeViewIdentityProvider(),
+			horizontalScrolling: this.id === pdfPinnedFoldersViewId ? false : undefined,`)
+      .replace('interface ITreeExplorerTemplateData {', `interface ITreeExplorerTemplateData {
+	readonly pinnedDate?: HTMLElement;`)
+      .replace("const actionsContainer = DOM.append(resourceLabel.element, DOM.$('.actions'));", `const pinned = this.treeViewId === pdfPinnedFoldersViewId;
+		const actionsContainer = DOM.append(pinned ? container : resourceLabel.element, DOM.$('.actions'));
+		const pinnedDate = pinned ? DOM.append(container, DOM.$('span.pdfutl-pinned-date')) : undefined;
+		if (pinnedDate) {
+			DOM.append(pinnedDate, DOM.$('span'));
+		}
+		container.classList.toggle('pdfutl-pinned-row', pinned);`)
+      .replace('return { resourceLabel, icon, checkboxContainer, actionBar, container };',
+        'return { resourceLabel, icon, checkboxContainer, actionBar, container, pinnedDate };')
+      .replace('const labelStr = treeItemLabel ?', `if (templateData.pinnedDate) {
+			templateData.pinnedDate.firstElementChild!.textContent = description ?? '';
+			templateData.pinnedDate.hidden = !description;
+		}
+		const visibleDescription = templateData.pinnedDate ? undefined : description;
+		const labelStr = treeItemLabel ?`)
+      .replace('setResource({ name: label, description, resource: labelResource }', 'setResource({ name: label, description: visibleDescription, resource: labelResource }')
+      .replace('setResource({ name: label, description }', 'setResource({ name: label, description: visibleDescription }');
+  });
+}
+
+function preparePdfWindowZoom() {
+  patchCodeOssSource('workbench/electron-browser/window.ts', source => {
+    if (source.includes('registerPdfUtlWheelZoom')) return source;
+    return source
+      .replace('getWindowById, getWindows, $', 'getWindowById, getWindows, onDidRegisterWindow, $')
+      .replace('protected registerListeners(): void {', `private registerPdfUtlWheelZoom(target: Window) {
+		return addDisposableListener(target, 'wheel', (event: WheelEvent) => {
+			if (!event.ctrlKey || event.altKey || event.metaKey || !event.deltaY) {
+				return;
+			}
+			event.preventDefault();
+			event.stopPropagation();
+			void this.commandService.executeCommand(event.deltaY < 0 ? 'workbench.action.zoomIn' : 'workbench.action.zoomOut');
+		}, { capture: true, passive: false });
+	}
+
+	protected registerListeners(): void {
+		this._register(this.registerPdfUtlWheelZoom(mainWindow));
+		this._register(onDidRegisterWindow(({ window, disposables }) => {
+			disposables.add(this.registerPdfUtlWheelZoom(window));
+		}));`);
+  });
+  patchCodeOssSource('workbench/contrib/webview/browser/webviewElement.ts', source => {
+    if (source.includes('updatePdfPreviewScale')) return source;
+    return source
+      .replace("import { isFirefox }", "import { getZoomFactor, isFirefox, onDidChangeZoomLevel }")
+      .replace('EventType, getWindow, getWindowById }', 'EventType, getWindow, getWindowById, scheduleAtNextAnimationFrame }')
+      .replace('this._windowId = targetWindow.vscodeWindowId;', `this._windowId = targetWindow.vscodeWindowId;
+		if (this.providedViewType === 'pdfutl.viewer') {
+			// Chromium inherits window zoom even across iframe origins. Offset it before it reaches the PDF stage.
+			const updatePdfPreviewScale = () => {
+				if (this.element) {
+					this.element.style.zoom = String(1 / getZoomFactor(targetWindow));
+				}
+			};
+			updatePdfPreviewScale();
+			const pendingScale = this._mountDisposables.add(new MutableDisposable<IDisposable>());
+			this._mountDisposables.add(onDidChangeZoomLevel(windowId => {
+				if (windowId === targetWindow.vscodeWindowId) {
+					// Let Chromium propagate page zoom to the iframe before changing its CSS zoom.
+					pendingScale.value = scheduleAtNextAnimationFrame(targetWindow, () => {
+						pendingScale.value = scheduleAtNextAnimationFrame(targetWindow, updatePdfPreviewScale);
+					});
+				}
+			}));
+		}`);
+  });
 }
 
 function preparePdfTimelinePresentation() {

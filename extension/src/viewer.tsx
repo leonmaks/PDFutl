@@ -125,7 +125,7 @@ function PdfViewPersistence({ user }: { user: string }) {
 
     function publishView() {
       if (!pendingPosition) return;
-      bridge.postMessage({ type: 'pdfInteraction', activity: { kind: 'view', position: pendingPosition } });
+      bridge.postMessage({ type: 'readingPosition', position: pendingPosition });
       pendingPosition = undefined;
     }
 
@@ -224,6 +224,8 @@ function PageIndicator() {
     if (target !== page) stage.goToPage(target - 1, { behavior: 'instant' });
   }
 
+  if (pages <= 1) return null;
+
   return <form className="page-indicator" aria-label="Current page" data-current-page={page} onSubmit={goToPage}>
     {editing ? <input ref={field} className="page-number" aria-label="Page number" type="text" inputMode="numeric"
       size={Math.max(2, String(pages).length)} value={draft} aria-invalid={invalid || undefined}
@@ -234,7 +236,7 @@ function PageIndicator() {
         event.preventDefault();
         event.stopPropagation();
         finishEditing(true);
-      }} /> : <button ref={button} className="page-number" type="button" disabled={!pages}
+    }} /> : <button ref={button} className="page-number" type="button"
       aria-label={`Page ${page} of ${pages}. Go to page`} title="Go to page"
       onClick={() => setDraft(String(page))}>{page}</button>}
     <span> / {pages}</span>
@@ -374,7 +376,7 @@ function PdfDocument({ name, user, highlights, commentEdits, unrestored }: {
     {annotations.error && <div className="status" role="alert">{annotations.error}</div>}
     <div className="reading-area">
       <PdfViewPersistence user={user} />
-      <PdfSearch ref={search} onSearch={activity => bridge.postMessage({ type: 'pdfInteraction', activity })}
+      <PdfSearch ref={search}
         onToggleComments={toggleComments} onCloseComments={closeComments}
         pageComments={commentsOpen ? <PageComments annotations={annotations} close={closeComments} /> : undefined}>
         <Stage className="stage" overlay={<PdfAnnotationOverlay annotations={annotations} />}>

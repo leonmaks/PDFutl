@@ -2,13 +2,12 @@ import { createHash, randomBytes } from 'node:crypto';
 import { userInfo } from 'node:os';
 import { basename } from 'node:path';
 import * as vscode from 'vscode';
-import { isPdfAnnotationActivity, isPdfFragment, isPdfInteraction, isSavedPdfCommentEdit, isSavedPdfHighlight, openAnnotationActivityCommand, type PdfFragment } from './pdfAnnotationActivity';
+import { isPdfAnnotationActivity, isPdfFragment, isPdfReadingPosition, isSavedPdfCommentEdit, isSavedPdfHighlight, openAnnotationActivityCommand, type PdfFragment } from './pdfAnnotationActivity';
 import { PdfHistory, samePdfFile } from './pdfHistory';
 import { registerPinnedFolders } from './pinnedFolders';
 import type { HostMessage, ViewerMessage } from './protocol';
 
 const pendingHistoryWrites = new Set<Promise<void>>();
-let activeViewer: PdfViewer | undefined;
 
 function trackHistoryWrite(write: Promise<void>): Promise<void> {
   pendingHistoryWrites.add(write);
@@ -36,17 +35,6 @@ class PdfViewer implements vscode.CustomReadonlyEditorProvider {
 
   openCustomDocument(uri: vscode.Uri): vscode.CustomDocument {
     return { uri, dispose() {} };
-  }
-
-  closeViews(): void {
-    for (const view of this.panels.values()) this.recordClose(view);
-  }
-
-  private recordClose(view: PdfDocumentView): void {
-    if (!view.loaded) return;
-    view.loaded = false;
-    void trackHistoryWrite(this.history.recordInteraction(view.uri, { kind: 'closed' }))
-      .catch(error => console.error('PDF closing history:', error));
   }
 
   sendToActiveView(type: 'focusFind' | 'togglePageComments'): void {
@@ -183,7 +171,6 @@ class PdfViewer implements vscode.CustomReadonlyEditorProvider {
             if (!documentView.loaded) {
               documentView.loaded = true;
               this.deliverFragment();
-              void trackHistoryWrite(this.history.recordOpen(document.uri)).catch(error => console.error('PDF opening history:', error));
             }
             break;
           case 'annotationSaved': {
@@ -201,10 +188,10 @@ class PdfViewer implements vscode.CustomReadonlyEditorProvider {
             }
             break;
           }
-          case 'pdfInteraction':
-            if (documentView.loaded && isPdfInteraction(message.activity)) {
-              void trackHistoryWrite(this.history.recordInteraction(document.uri, message.activity))
-                .catch(error => console.error('PDF interaction history:', error));
+          case 'readingPosition':
+            if (documentView.loaded && isPdfReadingPosition(message.position)) {
+              void trackHistoryWrite(this.history.recordReadingPosition(document.uri, message.position))
+                .catch(error => console.error('PDF reading position:', error));
             }
             break;
           case 'openError':
@@ -220,7 +207,6 @@ class PdfViewer implements vscode.CustomReadonlyEditorProvider {
       this.panels.delete(panel);
       viewListener.dispose();
       listener.dispose();
-      this.recordClose(documentView);
     });
     const nonce = randomBytes(16).toString('base64');
     webview.html = `<!doctype html>
@@ -244,7 +230,6 @@ export function activate(context: vscode.ExtensionContext): void {
   registerPinnedFolders(context);
   const history = new PdfHistory(context.globalStorageUri, currentUserName());
   const provider = new PdfViewer(context.extensionUri, history);
-  activeViewer = provider;
   context.subscriptions.push(
     history,
     vscode.commands.registerCommand('pdfutl.find', () => provider.sendToActiveView('focusFind')),
@@ -267,8 +252,6 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export async function deactivate(): Promise<void> {
-  activeViewer?.closeViews();
-  activeViewer = undefined;
   await Promise.allSettled(pendingHistoryWrites);
 }
 

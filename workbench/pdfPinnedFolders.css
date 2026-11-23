@@ -1,0 +1,91 @@
+.pdfutl-pinned-row {
+	container-type: inline-size;
+	position: relative;
+}
+
+.customview-tree .monaco-list .monaco-list-row .pdfutl-pinned-row > .monaco-icon-label {
+	min-width: 0;
+}
+
+.pdfutl-pinned-row > .actions {
+	flex: 0 0 auto;
+}
+
+.customview-tree .monaco-list .monaco-list-row:not(:hover) .pdfutl-pinned-row > .actions:not(:focus-within) {
+	display: none;
+}
+
+.customview-tree .monaco-list:focus-visible .monaco-list-row.focused .pdfutl-pinned-row > .actions {
+	display: block;
+}
+
+.monaco-pane-view .pane > .pdfutl-pinned-header:is(:hover, :focus-within) > .actions {
+	display: initial;
+}
+
+.pdfutl-pinned-header:not(:hover, :focus-within) .action-item:has(> :is(.codicon-case-sensitive, .codicon-calendar, .codicon-clock, .codicon-eye-closed, .codicon-pdfutl-name-asc, .codicon-pdfutl-name-desc, .codicon-pdfutl-date-asc, .codicon-pdfutl-date-desc)) {
+	display: none;
+}
+
+.pdfutl-pinned-date {
+	flex: 0 0 auto;
+	margin-inline-start: auto;
+	padding-inline-start: 4px;
+	text-align: end;
+	white-space: nowrap;
+	font-variant-numeric: tabular-nums;
+	color: var(--vscode-descriptionForeground);
+}
+
+@container (max-width: 185px) {
+	.pdfutl-pinned-date {
+		flex: 0 1 46px;
+		min-width: 0;
+		padding-inline-start: 0;
+	}
+
+	.pdfutl-pinned-date > span {
+		position: absolute;
+		inset-block: 0;
+		inset-inline-end: 0;
+		inline-size: 46px;
+		align-content: center;
+		line-height: 1;
+		font-size: 11px;
+		white-space: normal;
+	}
+
+	.customview-tree .monaco-list .monaco-list-row .pdfutl-pinned-row > .actions .action-label {
+		padding: 1px;
+		font-size: 14px;
+	}
+}
+
+.monaco-list-row:is(.selected, .focused) .pdfutl-pinned-date {
+	color: inherit;
+}
+
+.monaco-action-bar .action-label:is(.codicon-pdfutl-name-asc, .codicon-pdfutl-name-desc, .codicon-pdfutl-date-asc, .codicon-pdfutl-date-desc) {
+	position: relative;
+}
+
+.monaco-action-bar .action-label:is(.codicon-pdfutl-name-asc, .codicon-pdfutl-name-desc, .codicon-pdfutl-date-asc, .codicon-pdfutl-date-desc)::before {
+	transform: translateX(-2px);
+}
+
+.monaco-action-bar .action-label:is(.codicon-pdfutl-name-asc, .codicon-pdfutl-name-desc, .codicon-pdfutl-date-asc, .codicon-pdfutl-date-desc)::after {
+	content: '';
+	position: absolute;
+	inset-inline-end: 0;
+	top: 50%;
+	transform: translateY(-50%);
+	border-inline: 2px solid transparent;
+}
+
+.monaco-action-bar .action-label:is(.codicon-pdfutl-name-asc, .codicon-pdfutl-date-asc)::after {
+	border-bottom: 4px solid currentColor;
+}
+
+.monaco-action-bar .action-label:is(.codicon-pdfutl-name-desc, .codicon-pdfutl-date-desc)::after {
+	border-top: 4px solid currentColor;
+}

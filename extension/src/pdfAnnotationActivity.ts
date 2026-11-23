@@ -45,11 +45,6 @@ export interface PdfReadingPosition {
   readonly anchor: { readonly pageIndex: number; readonly fractionX: number; readonly fractionY: number };
 }
 
-export type PdfInteraction =
-  | { readonly kind: 'opened' | 'closed' }
-  | { readonly kind: 'view'; readonly position: PdfReadingPosition }
-  | { readonly kind: 'search'; readonly query: string; readonly matchCase: boolean; readonly wholeWord: boolean; readonly regex: boolean };
-
 export const openAnnotationActivityCommand = 'pdfutl.openAnnotationActivity';
 
 export function isPdfFragment(value: unknown): value is PdfFragment {
@@ -97,20 +92,11 @@ export function pdfCommentKey(ref: AnnotationRef): string {
   return `${ref.page.objectNumber}:${ref.kind}:${ref.kind === 'objectNumber' ? ref.objectNumber : ref.baseIndex}`;
 }
 
-export function isPdfInteraction(value: unknown): value is PdfInteraction {
+export function isPdfReadingPosition(value: unknown): value is PdfReadingPosition {
   if (!value || typeof value !== 'object') return false;
-  const event = value as Partial<PdfInteraction>;
-  switch (event.kind) {
-    case 'opened': case 'closed': return true;
-    case 'search': return typeof event.query === 'string' && !!event.query.trim() &&
-      [event.matchCase, event.wholeWord, event.regex].every(option => typeof option === 'boolean');
-    case 'view': {
-      const position = event.position;
-      return !!position && Number.isSafeInteger(position.pageIndex) && position.pageIndex >= 0 &&
-        typeof position.zoomPercent === 'number' && Number.isFinite(position.zoomPercent) && position.zoomPercent > 0 &&
-        !!position.anchor && Number.isSafeInteger(position.anchor.pageIndex) && position.anchor.pageIndex >= 0 &&
-        [position.anchor.fractionX, position.anchor.fractionY].every(Number.isFinite);
-    }
-    default: return false;
-  }
+  const position = value as PdfReadingPosition;
+  return Number.isSafeInteger(position.pageIndex) && position.pageIndex >= 0 &&
+    Number.isFinite(position.zoomPercent) && position.zoomPercent > 0 &&
+    !!position.anchor && Number.isSafeInteger(position.anchor.pageIndex) && position.anchor.pageIndex >= 0 &&
+    [position.anchor.fractionX, position.anchor.fractionY].every(Number.isFinite);
 }

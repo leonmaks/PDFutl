@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, rename, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, rmdir, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname } from 'node:path';
 import * as vscode from 'vscode';
-import { isPdfAnnotationActivity, isPdfInteraction, isSavedPdfCommentEdit, isSavedPdfHighlight, openAnnotationActivityCommand, pdfCommentKey, type PdfAnnotationActivity, type PdfInteraction, type SavedPdfCommentEdit, type SavedPdfHighlight } from './pdfAnnotationActivity';
+import { isPdfAnnotationActivity, isSavedPdfCommentEdit, isSavedPdfHighlight, openAnnotationActivityCommand, pdfCommentKey, type PdfAnnotationActivity, type PdfReadingPosition, type SavedPdfCommentEdit, type SavedPdfHighlight } from './pdfAnnotationActivity';
 import { formatPdfTimelineDate, pdfTimelineSource } from './pdfTimelineDate';
 
 interface SavedCopy {
@@ -23,18 +23,17 @@ interface AnnotationRecord {
   readonly commentEdit?: SavedPdfCommentEdit;
 }
 
-interface InteractionRecord {
+interface ReadingPositionRecord {
   readonly id: string;
   readonly resource: string;
   readonly timestamp: number;
   readonly user: string;
-  readonly activity: PdfInteraction;
+  readonly activity: { readonly kind: 'view'; readonly position: PdfReadingPosition };
 }
 
 const recordId = '[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}';
 const recordName = new RegExp('^(' + recordId + ')\\.json$');
 const annotationRecordName = new RegExp('^annotation-([a-f0-9]{64})-(?:([a-f0-9]{64})-)?(' + recordId + ')\\.json$');
-const interactionRecordName = new RegExp('^activity-([a-f0-9]{64})-(' + recordId + ')\\.json$');
 
 function actorName(value: unknown): string {
   return typeof value === 'string' && value.trim() ? value : 'Unknown user';
@@ -68,11 +67,14 @@ export class PdfHistory implements vscode.TimelineProvider, vscode.Disposable {
     // Open archives as ordinary local PDFs so Timeline follows them by file URI.
     this.directory = vscode.Uri.joinPath(vscode.Uri.file(storage.fsPath), 'saved-pdf-copies');
     const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(this.directory, '*.json'));
+    const updateTimeline = (uri: vscode.Uri) => {
+      const file = basename(uri.path);
+      if (recordName.test(file) || annotationRecordName.test(file)) this.changed.fire(undefined);
+    };
     this.subscriptions = vscode.Disposable.from(
       this.changed, watcher,
-      watcher.onDidCreate(uri => { if (!basename(uri.path).startsWith('view-')) this.changed.fire(undefined); }),
-      watcher.onDidChange(uri => { if (basename(uri.path).startsWith('first-open-')) this.changed.fire(undefined); }),
-      watcher.onDidDelete(uri => { if (!basename(uri.path).startsWith('view-')) this.changed.fire(undefined); }),
+      watcher.onDidCreate(updateTimeline),
+      watcher.onDidDelete(updateTimeline),
       vscode.workspace.registerTimelineProvider(pdfTimelineSource, 'PDFUtl Activity', 'file', this),
     );
   }
@@ -83,13 +85,10 @@ export class PdfHistory implements vscode.TimelineProvider, vscode.Disposable {
     if (!/\.pdf$/i.test(uri.path)) return;
     const records = await this.readRecords();
     const source = this.sourceFor(uri, records);
-    const [opened, annotations, interactions] = await Promise.all([
-      this.firstOpenItem(source), this.annotationItems(source), this.interactionItems(source),
-    ]);
+    const annotations = await this.annotationItems(source);
     if (token.isCancellationRequested) return;
     const versions = records.filter(record => pathKey(record.source) === pathKey(source));
-    const items = [...versions.map((record, index) => this.toItem(record, versions.length - index)), ...annotations, ...interactions];
-    if (opened) items.push(opened);
+    const items = [...versions.map((record, index) => this.toItem(record, versions.length - index)), ...annotations];
     items.sort((a, b) => b.timestamp - a.timestamp);
     const start = options.cursor ? items.findIndex(item => item.id === options.cursor) + 1 : 0;
     const end = options.limit === undefined ? items.length : start + options.limit;
@@ -97,25 +96,6 @@ export class PdfHistory implements vscode.TimelineProvider, vscode.Disposable {
       items: items.slice(start, end),
       cursor: end < items.length ? items[end - 1]?.id : undefined,
     };
-  }
-
-  async recordOpen(uri: vscode.Uri): Promise<void> {
-    if (uri.scheme !== 'file' || !/\.pdf$/i.test(uri.path)) return;
-    const timestamp = Date.now();
-    const source = this.sourceFor(uri, await this.readRecords());
-    const marker = this.firstOpenPath(source);
-    await mkdir(this.directory.fsPath, { recursive: true });
-    try {
-      // A shared profile can open the same PDF in several tabs or windows at once.
-      await writeFile(marker, JSON.stringify({ timestamp, user: this.user, resource: uri.fsPath }) + '\n', { flag: 'wx' });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-        await this.writeInteraction(source, uri.fsPath, { kind: 'opened' }, timestamp);
-        return;
-      }
-      throw error;
-    }
-    this.changed.fire(undefined);
   }
 
   async saveLocation(uri: vscode.Uri): Promise<vscode.Uri> {
@@ -148,18 +128,14 @@ export class PdfHistory implements vscode.TimelineProvider, vscode.Disposable {
     this.changed.fire(undefined);
   }
 
-  async recordInteraction(uri: vscode.Uri, activity: PdfInteraction): Promise<void> {
+  async recordReadingPosition(uri: vscode.Uri, position: PdfReadingPosition): Promise<void> {
     if (uri.scheme !== 'file' || !/\.pdf$/i.test(uri.path)) return;
-    const timestamp = Date.now();
-    await this.writeInteraction(this.sourceFor(uri, await this.readRecords()), uri.fsPath, activity, timestamp);
-  }
-
-  private async writeInteraction(source: string, resource: string, activity: PdfInteraction, timestamp: number): Promise<void> {
-    const record: InteractionRecord = { id: randomUUID(), timestamp, resource, user: this.user, activity };
-    const isView = activity.kind === 'view';
+    const record: ReadingPositionRecord = {
+      id: randomUUID(), timestamp: Date.now(), resource: uri.fsPath, user: this.user, activity: { kind: 'view', position },
+    };
+    const source = this.sourceFor(uri, await this.readRecords());
     await mkdir(this.directory.fsPath, { recursive: true });
-    await this.publishRecord(`${isView ? 'view' : 'activity'}-${historyKey(source)}-${record.id}.json`, record);
-    if (!isView) this.changed.fire(undefined);
+    await this.publishRecord(`view-${historyKey(source)}-${record.id}.json`, record);
   }
 
   async recordCopy(source: vscode.Uri, exported: vscode.Uri, bytes: Uint8Array): Promise<void> {
@@ -184,7 +160,7 @@ export class PdfHistory implements vscode.TimelineProvider, vscode.Disposable {
     this.changed.fire(undefined);
   }
 
-  private async publishRecord(file: string, record: SavedCopy | AnnotationRecord | InteractionRecord): Promise<void> {
+  private async publishRecord(file: string, record: SavedCopy | AnnotationRecord | ReadingPositionRecord): Promise<void> {
     const metadata = vscode.Uri.joinPath(this.directory, file).fsPath;
     const pending = `${metadata}.tmp`;
     try {
@@ -219,31 +195,6 @@ export class PdfHistory implements vscode.TimelineProvider, vscode.Disposable {
     };
   }
 
-  private firstOpenPath(source: string): string {
-    return vscode.Uri.joinPath(this.directory, 'first-open-' + historyKey(source) + '.json').fsPath;
-  }
-
-  private async firstOpenItem(source: string): Promise<vscode.TimelineItem | undefined> {
-    const marker = this.firstOpenPath(source);
-    try {
-      const contents = await readFile(marker, 'utf8');
-      let metadata: { timestamp?: number; user?: string } | number | null = null;
-      try { metadata = JSON.parse(contents); } catch { /* A first opening can be interrupted during the write. */ }
-      const recorded = typeof metadata === 'number' ? metadata : metadata?.timestamp ?? NaN;
-      const user = actorName(typeof metadata === 'object' ? metadata?.user : undefined);
-      // If the first write was interrupted, the marker's creation still records the opening.
-      const timestamp = recorded > 0 && Number.isFinite(new Date(recorded).getTime())
-        ? recorded
-        : (await stat(marker)).birthtimeMs;
-      return {
-        id: basename(marker), timestamp, label: 'First opened',
-        description: user, tooltip: `${formatPdfTimelineDate(timestamp)}\n${user}`, iconPath: new vscode.ThemeIcon('folder-opened'),
-      };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    }
-  }
-
   private async annotationItems(source: string): Promise<vscode.TimelineItem[]> {
     const key = historyKey(source);
     const records = await this.readAnnotationRecords(match => match[1] === key);
@@ -259,28 +210,6 @@ export class PdfHistory implements vscode.TimelineProvider, vscode.Disposable {
         command: { title: 'Open PDF fragment', command: openAnnotationActivityCommand, arguments: [vscode.Uri.file(resource), activity.fragment] },
       };
     });
-  }
-
-  private async interactionItems(source: string): Promise<vscode.TimelineItem[]> {
-    const key = historyKey(source);
-    const files = await this.readFiles();
-    const items = await Promise.all(files.map(async file => {
-      const match = interactionRecordName.exec(file);
-      if (match?.[1] !== key) return;
-      const record = await this.readMetadata(file) as Partial<InteractionRecord> | undefined;
-      if (!record || record.id !== match[2] || typeof record.timestamp !== 'number' ||
-        !Number.isFinite(new Date(record.timestamp).getTime()) || !isPdfInteraction(record.activity) ||
-        record.activity.kind === 'view') return;
-      const { activity, id, timestamp } = record;
-      const user = actorName(record.user);
-      const label = activity.kind === 'search' ? `Searched · ${activity.query.replace(/\s+/g, ' ')}` :
-        activity.kind === 'opened' ? 'Opened' : 'Closed';
-      return {
-        id, timestamp, label, description: user, tooltip: [label, formatPdfTimelineDate(timestamp), user, record.resource].filter(Boolean).join('\n'),
-        iconPath: new vscode.ThemeIcon(activity.kind === 'search' ? 'search' : 'file-pdf'),
-      };
-    }));
-    return items.filter(item => item !== undefined);
   }
 
   private async readAnnotationRecords(matches: (match: RegExpExecArray) => boolean): Promise<AnnotationRecord[]> {

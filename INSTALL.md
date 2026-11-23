@@ -1,12 +1,12 @@
-# Установка PDFUtl Portable 0.1.0
+# Установка PDFUtl Portable 0.1.1
 
-Скачайте архив для своей системы из [релиза v0.1.0](https://github.com/leonmaks/PDFUtl/releases/tag/v0.1.0). Сборки рассчитаны на 64-битные процессоры Intel и AMD. Electron входит в архив. Для распаковки и запуска в разрешённой пользовательской папке достаточно обычной учётной записи.
+Скачайте архив для своей системы из [релиза v0.1.1](https://github.com/leonmaks/PDFUtl/releases/tag/v0.1.1). Сборки рассчитаны на 64-битные процессоры Intel и AMD. Electron входит в архив. Для распаковки и запуска в разрешённой пользовательской папке достаточно обычной учётной записи.
 
 ## Windows x64
 
-1. Скачайте `PDFUtl-0.1.0-windows-x64.zip`.
+1. Скачайте `PDFUtl-0.1.1-windows-x64.zip`.
 2. В Проводнике выберите «Извлечь всё» и укажите папку, доступную вам для записи и разрешённую для запуска приложений.
-3. Откройте извлечённую папку `PDFUtl-0.1.0-windows-x64` и запустите `PDFUtl.exe`. PDF можно открыть через **File → Open File…** или передать из PowerShell сразу несколько путей.
+3. Откройте извлечённую папку `PDFUtl-0.1.1-windows-x64` и запустите `PDFUtl.exe`. PDF можно открыть через **File → Open File…** или передать из PowerShell сразу несколько путей.
 
 ```powershell
 .\PDFUtl.exe 'C:\Documents\Review A.pdf' 'C:\Documents\Review B.pdf'
@@ -15,12 +15,12 @@
 ## SberOS / Linux x64
 
 1. Выполните `uname -m`. Для этого архива результат должен быть `x86_64`.
-2. Скачайте `PDFUtl-0.1.0-linux-x64.tar.gz`. В терминале в папке загрузки распакуйте архив в разрешённую для запуска папку. В примере используется домашняя папка.
+2. Скачайте `PDFUtl-0.1.1-linux-x64.tar.gz`. В терминале в папке загрузки распакуйте архив в разрешённую для запуска папку. В примере используется домашняя папка.
 3. Запустите `pdfutl` из графической сессии. Для работы нужны штатные графические библиотеки Electron и поддержка его песочницы в вашей конфигурации Linux.
 
 ```sh
-tar -xzf PDFUtl-0.1.0-linux-x64.tar.gz -C "$HOME"
-cd "$HOME/PDFUtl-0.1.0-linux-x64"
+tar -xzf PDFUtl-0.1.1-linux-x64.tar.gz -C "$HOME"
+cd "$HOME/PDFUtl-0.1.1-linux-x64"
 ./pdfutl
 ```
 
@@ -45,9 +45,9 @@ cd "$HOME/PDFUtl-0.1.0-linux-x64"
 Сравните вывод команды с записью для соответствующего файла в `SHA256SUMS.txt` из релиза.
 
 ```powershell
-Get-FileHash -Algorithm SHA256 .\PDFUtl-0.1.0-windows-x64.zip
+Get-FileHash -Algorithm SHA256 .\PDFUtl-0.1.1-windows-x64.zip
 ```
 
 ```sh
-sha256sum PDFUtl-0.1.0-linux-x64.tar.gz
+sha256sum PDFUtl-0.1.1-linux-x64.tar.gz
 ```

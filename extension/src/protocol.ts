@@ -1,11 +1,11 @@
 import type { PdfOutlineRequest, PdfOutlineResponse } from './outlineProtocol';
-import type { PdfAnnotationActivity, PdfFragment, PdfInteraction, SavedPdfCommentEdit, SavedPdfHighlight } from './pdfAnnotationActivity';
+import type { PdfAnnotationActivity, PdfFragment, PdfReadingPosition, SavedPdfCommentEdit, SavedPdfHighlight } from './pdfAnnotationActivity';
 
 export type ViewerMessage =
   | { type: 'ready' }
   | { type: 'opened' }
   | { type: 'annotationSaved'; activity: PdfAnnotationActivity; highlights?: readonly SavedPdfHighlight[]; commentEdit?: Omit<SavedPdfCommentEdit, 'editor'> }
-  | { type: 'pdfInteraction'; activity: Extract<PdfInteraction, { kind: 'view' | 'search' }> }
+  | { type: 'readingPosition'; position: PdfReadingPosition }
   | PdfOutlineResponse
   | { type: 'openError'; message: string }
   | { type: 'exportedPdf'; requestId: string; bytes: ArrayBuffer }
