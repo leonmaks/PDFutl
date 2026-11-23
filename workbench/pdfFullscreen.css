@@ -14,3 +14,7 @@
 	display: block;
 	border-radius: 0 !important;
 }
+
+.monaco-workbench:has(> div > .pdfutl-fullscreen-webview) .part.titlebar {
+	display: none !important;
+}

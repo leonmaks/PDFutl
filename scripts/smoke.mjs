@@ -353,6 +353,8 @@ async function verifyDarcula(workbench, pdf) {
 async function verifyFullscreen(frame, tab) {
   const page = frame.page();
   const preview = frame.locator('.preview');
+  const titlebar = page.locator('.monaco-workbench .part.titlebar');
+  const titlebarWasVisible = tab && await titlebar.isVisible();
   const overlay = frame.getByRole('region', { name: 'PDF search and zoom', includeHidden: true });
   const find = frame.getByRole('searchbox', { name: 'Find text' });
   const matches = frame.getByRole('list', { name: 'All matches' });
@@ -364,6 +366,7 @@ async function verifyFullscreen(frame, tab) {
   await (tab ?? preview).focus();
   await page.keyboard.press('F11');
   await mode(true);
+  if (titlebarWasVisible) await titlebar.waitFor({ state: 'hidden' });
   await poll(async () => {
     const native = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some(window => window.isFullScreen()));
     const box = await preview.boundingBox();
@@ -416,6 +419,7 @@ async function verifyFullscreen(frame, tab) {
   await preview.focus();
   await page.keyboard.press('Escape');
   await mode(false);
+  if (titlebarWasVisible) await titlebar.waitFor();
   assert.equal(await find.inputValue(), 'LEDGER', 'Exiting fullscreen keeps the search query');
   await preview.focus();
   await page.keyboard.press('F11');
