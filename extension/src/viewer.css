@@ -306,6 +306,9 @@ mark { color: inherit; background: var(--epdf-search-highlight); }
 .results { overflow: auto; min-height: 0; margin: 0; padding: 0; list-style: none; }
 .result { display: grid; gap: 2px; width: 100%; overflow-wrap: anywhere; text-align: left; }
 .result[aria-current='true'] > .muted { color: inherit; }
+.stage > [data-placement]:has(> .annotation-palette, > .annotation-card) {
+  z-index: 5;
+}
 .annotation-palette {
   display: flex;
   align-items: center;

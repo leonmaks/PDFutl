@@ -2,7 +2,7 @@
   "name": "pdfutl-viewer",
   "displayName": "PDF Viewer",
   "publisher": "pdfutl",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "engines": { "vscode": "^1.105.0" },
   "main": "./dist/host.cjs",
   "activationEvents": ["onStartupFinished", "onCustomEditor:pdfutl.viewer"],

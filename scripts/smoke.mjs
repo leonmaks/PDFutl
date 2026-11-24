@@ -232,6 +232,7 @@ async function verifyWithWorkbench(workbench) {
 
   await tab(basename(files[0])).first().waitFor();
   await tab(basename(files[1])).first().waitFor();
+  await verifyPdfOrder(workbench, [files[1], files[0]]);
   await tab(basename(files[0])).first().click();
   const initialPdf = await pdfFrame(workbench, basename(files[0]));
   await verifyDarcula(workbench, initialPdf);
@@ -456,9 +457,15 @@ async function verifyAnnotationUndo(workbench) {
   };
   try {
     const frame = await open();
+    await verifyPdfOrder(workbench, [file, files[1], files[0]]);
+    await tab.focus();
+    await workbench.keyboard.press('Control+Shift+PageDown');
+    await verifyPdfOrder(workbench, [files[1], file, files[0]]);
+    console.log('New PDFs open first in their group and Open Editors, and manual moves update both');
     const page = frame.locator('[data-pdf-page="1"]');
     const card = frame.getByRole('region', { name: 'Comment card' });
     await selectReviewText(frame, page, 44);
+    await frame.locator('.search-overlay[data-visible="true"]').waitFor();
     await frame.getByRole('button', { name: 'Highlight blue' }).click();
     const timeline = await openTimeline(workbench);
     const event = label => timeline.getByRole('treeitem').filter({ has: workbench.getByText(label, { exact: true }) });
@@ -915,6 +922,24 @@ async function verifyOutline(workbench) {
   console.log('Native PDF Outline follows tabs, preserves nested bookmarks, and opens direct and named destinations');
 }
 
+async function verifyPdfOrder(workbench, paths) {
+  const expected = paths.map(path => basename(path));
+  const tabs = workbench.locator('.editor-group-container.active .tab[data-resource-name]');
+  const editors = workbench.locator('.part.sidebar .pane-header')
+    .filter({ has: workbench.getByRole('heading', { name: 'Open Editors', exact: true }) })
+    .locator('..').getByRole('listitem');
+  await poll(async () => {
+    const [tabNames, listedNames] = await Promise.all([
+      tabs.evaluateAll(items => items.map(item => item.getAttribute('data-resource-name'))),
+      editors.evaluateAll((rows, names) => rows.flatMap(row => {
+        const name = names.find(name => row.getAttribute('aria-label')?.includes(name));
+        return name ? [name] : [];
+      }), expected),
+    ]);
+    return [tabNames, listedNames].every(names => JSON.stringify(names) === JSON.stringify(expected));
+  }, `PDF tab and Open Editors order is ${expected.join(', ')}`);
+}
+
 async function verifyNavigator(workbench) {
   const sidebar = workbench.locator('.part.sidebar');
   const heading = label => sidebar.locator('.pane-header').filter({ has: workbench.getByRole('heading', { name: label, exact: true }) });
@@ -1238,7 +1263,10 @@ async function closeSearch(frame) {
   const overlay = frame.locator('.search-overlay');
   if (await overlay.getAttribute('data-visible') === 'true') {
     const pin = frame.getByRole('button', { name: 'Pin search panel' });
-    if (await pin.getAttribute('aria-pressed') === 'true') await pin.click();
+    if (await pin.getAttribute('aria-pressed') === 'true') {
+      await pin.click();
+      await poll(async () => await pin.getAttribute('aria-pressed') === 'false', 'Search panel is unpinned');
+    }
     const box = await frame.locator('.preview').boundingBox();
     assert.ok(box);
     await frame.page().mouse.move(box.x + 4, box.y + box.height - 8);
@@ -1394,23 +1422,33 @@ async function verifySearchPanel(frame, nativeTab) {
   const stage = frame.locator('.stage');
   const pin = frame.getByRole('button', { name: 'Pin search panel' });
   const field = frame.getByRole('searchbox', { name: 'Find text' });
-  const box = await preview.boundingBox();
-  assert.ok(box);
-  const originalStage = await stage.boundingBox();
-  await stage.hover();
-  await overlay.waitFor({ state: 'hidden' });
-  const triggerBottom = await overlay.evaluate(node => node.offsetTop + node.offsetHeight);
-  await page.mouse.move(box.x + box.width - 8, box.y + triggerBottom - 2);
-  assert.equal(await overlay.getAttribute('data-visible'), 'false', 'Search waits before appearing on hover');
+  const moveInside = async (target, x, y) => {
+    const box = await target.boundingBox();
+    assert.ok(box);
+    await page.mouse.move(box.x + box.width * x, box.y + box.height * y);
+  };
+  const stageState = () => stage.evaluate(node => ({
+    ...node.getBoundingClientRect().toJSON(),
+    scrollLeft: node.scrollLeft,
+    scrollTop: node.scrollTop,
+  }));
+  await closeSearch(frame);
+  await moveInside(preview, 0.5, 0.5);
   await overlay.waitFor();
+  await overlay.waitFor({ state: 'hidden' });
+  const originalStage = await stageState();
+  await moveInside(preview, 0.75, 0.75);
+  assert.equal(await overlay.getAttribute('data-visible'), 'false', 'Mouse movement over the PDF reveals search after a delay');
+  await overlay.waitFor();
+  await moveInside(overlay, 0.5, 0.5);
   assert.equal(await pin.getAttribute('aria-pressed'), 'false');
-  assert.ok(!await field.evaluate(node => document.activeElement === node), 'Hover leaves keyboard focus alone');
+  assert.ok(!await field.evaluate(node => document.activeElement === node), 'Mouse movement leaves keyboard focus alone');
   const geometry = await overlay.evaluate(node => ({
     edges: [node.offsetLeft, node.offsetTop, node.parentElement.clientWidth - node.offsetLeft - node.offsetWidth],
     radius: getComputedStyle(node).borderTopLeftRadius,
   }));
   assert.deepEqual(geometry, { edges: [4, 4, 4], radius: '999px' });
-  assert.deepEqual(await stage.boundingBox(), originalStage, 'The overlay preserves the PDF viewport');
+  assert.deepEqual(await stageState(), originalStage, 'The overlay preserves the PDF viewport and scroll position');
   await verifyPdfToolLayout(frame);
   assert.equal(await frame.getByRole('toolbar', { name: 'PDF tools' }).count(), 0);
   assert.equal(await overlay.locator('[title="Hide panel"]').count(), 0);
@@ -1426,13 +1464,13 @@ async function verifySearchPanel(frame, nativeTab) {
   });
   if (nativeTab) assert.ok(background.tabColor, 'Code-OSS supplies the inactive tab color');
   assert.equal(background.actual, background.expected, 'The preview background matches the inactive tab color');
-  await stage.hover();
+  await moveInside(preview, 0.5, 0.5);
   assert.equal(await overlay.getAttribute('data-visible'), 'true', 'Search waits before hiding');
   await overlay.waitFor({ state: 'hidden' });
-  await page.mouse.move(box.x + box.width / 2, box.y + 3);
+  await moveInside(preview, 0.65, 0.65);
   await overlay.waitFor();
   await pin.click();
-  await stage.hover();
+  await moveInside(preview, 0.5, 0.5);
   await new Promise(resolve => setTimeout(resolve, 525));
   assert.equal(await overlay.getAttribute('data-visible'), 'true', 'The Pin button keeps the overlay open');
   await closeSearch(frame);
@@ -1487,7 +1525,7 @@ async function verifySearchPanel(frame, nativeTab) {
   } finally {
     await cdp.detach();
   }
-  console.log('The full toolbar area activates on hover; Ctrl+F and Ctrl+Shift+M work in English and Russian');
+  console.log('Mouse movement anywhere in the PDF reveals the toolbar after a delay; Ctrl+F and Ctrl+Shift+M work in English and Russian');
 }
 
 async function verifyPdfToolLayout(frame) {

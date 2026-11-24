@@ -85,17 +85,15 @@ export function PdfSearch({ ref, children, fullscreen, pageComments, onToggleCom
   const status = useSearchState(state => state.status);
   const preview = useRef<HTMLDivElement>(null);
   const overlay = useRef<HTMLElement>(null);
-  const toolbarBottom = useRef(0);
   const field = useRef<HTMLInputElement>(null);
   const resultsList = useRef<HTMLOListElement>(null);
   const optionsButton = useRef<HTMLButtonElement>(null);
   const optionsCard = useRef<HTMLDivElement>(null);
   const currentResult = useRef<HTMLButtonElement>(null);
   const matchPadding = useRef<{ side: 'top' | 'bottom'; size: number; release: () => void } | undefined>(undefined);
-  const hovered = useRef(false);
-  const hoverTimer = useRef<number | undefined>(undefined);
-  const fullscreenShow = useRef<number | undefined>(undefined);
-  const fullscreenHide = useRef<number | undefined>(undefined);
+  const pointerOverToolbar = useRef(false);
+  const showTimer = useRef<number | undefined>(undefined);
+  const hideTimer = useRef<number | undefined>(undefined);
   const previousMode = useRef(fullscreen);
   const position = useRef<{ x: number; y: number } | undefined>(undefined);
   const drag = useRef<{ id: number; x: number; y: number } | undefined>(undefined);
@@ -267,10 +265,10 @@ export function PdfSearch({ ref, children, fullscreen, pageComments, onToggleCom
   }, [active, hits, resultsOpen, visible]);
 
   const clearVisibilityTimers = useCallback(() => {
-    window.clearTimeout(hoverTimer.current);
-    window.clearTimeout(fullscreenShow.current);
-    window.clearTimeout(fullscreenHide.current);
-    fullscreenShow.current = undefined;
+    window.clearTimeout(showTimer.current);
+    window.clearTimeout(hideTimer.current);
+    showTimer.current = undefined;
+    hideTimer.current = undefined;
   }, []);
 
   const hide = useCallback(() => {
@@ -279,16 +277,25 @@ export function PdfSearch({ ref, children, fullscreen, pageComments, onToggleCom
     if (overlay.current?.contains(document.activeElement)) preview.current?.focus({ preventScroll: true });
   }, []);
 
+  const resetHideTimer = useCallback((shouldHide: boolean) => {
+    window.clearTimeout(hideTimer.current);
+    hideTimer.current = shouldHide ? window.setTimeout(hide, hideDelay) : undefined;
+  }, [hide]);
+
   useEffect(() => clearVisibilityTimers, [clearVisibilityTimers]);
 
   useLayoutEffect(() => {
     if (previousMode.current === fullscreen) return;
     previousMode.current = fullscreen;
     clearVisibilityTimers();
-    hovered.current = false;
+    pointerOverToolbar.current = false;
     drag.current = undefined;
     if (!pinned) hide();
   }, [clearVisibilityTimers, fullscreen, hide, pinned]);
+
+  useLayoutEffect(() => {
+    if (visible && !pinned && !drag.current) resetHideTimer(!pointerOverToolbar.current);
+  }, [pinned, resetHideTimer, visible]);
 
   const measurePanel = useCallback(() => {
     const panel = overlay.current;
@@ -303,11 +310,11 @@ export function PdfSearch({ ref, children, fullscreen, pageComments, onToggleCom
       panel.style.removeProperty('left');
       panel.style.removeProperty('top');
     }
-    toolbarBottom.current = panel.offsetTop + panel.offsetHeight;
-    viewport.style.setProperty('--pdf-tools-bottom', `${toolbarBottom.current}px`);
+    const toolbarBottom = panel.offsetTop + panel.offsetHeight;
+    viewport.style.setProperty('--pdf-tools-bottom', `${toolbarBottom}px`);
     if (fullscreen) {
       const above = panel.offsetTop - panelMargin;
-      const below = viewport.clientHeight - toolbarBottom.current - panelMargin;
+      const below = viewport.clientHeight - toolbarBottom - panelMargin;
       panel.dataset.popupAbove = String(above > below);
       panel.style.setProperty('--pdf-toolbar-height', `${panel.offsetHeight}px`);
       panel.style.setProperty('--pdf-popup-space', `${Math.max(24, Math.max(above, below) - 9)}px`);
@@ -373,39 +380,24 @@ export function PdfSearch({ ref, children, fullscreen, pageComments, onToggleCom
     return () => window.removeEventListener('keydown', onKeyDown, true);
   }, [fullscreen, open, move, resultsOpen, toggleComments, visible]);
 
-  function scheduleVisibility(show: boolean, keepOpen = pinned) {
-    window.clearTimeout(hoverTimer.current);
-    if (keepOpen || show === visible) return;
-    hoverTimer.current = window.setTimeout(show ? () => setVisible(true) : hide, show ? showDelay : hideDelay);
-  }
-
-  function updateHover(inside: boolean) {
-    if (hovered.current === inside) return;
-    hovered.current = inside;
-    scheduleVisibility(inside);
-  }
-
-  const fullscreenActivity = useCallback((inside: boolean) => {
-    hovered.current = inside;
-    window.clearTimeout(fullscreenHide.current);
+  const pointerActivity = useCallback((overToolbar: boolean) => {
+    pointerOverToolbar.current = overToolbar;
     if (pinned || drag.current) return;
     if (visible) {
-      if (!inside) fullscreenHide.current = window.setTimeout(hide, hideDelay);
-    } else if (fullscreenShow.current === undefined) {
-      fullscreenShow.current = window.setTimeout(() => {
-        fullscreenShow.current = undefined;
+      resetHideTimer(!overToolbar);
+    } else if (showTimer.current === undefined) {
+      showTimer.current = window.setTimeout(() => {
+        showTimer.current = undefined;
         setVisible(true);
-        if (!hovered.current) fullscreenHide.current = window.setTimeout(hide, hideDelay);
       }, showDelay);
     }
-  }, [hide, pinned, visible]);
+  }, [pinned, resetHideTimer, visible]);
 
   useLayoutEffect(() => {
-    if (!fullscreen) return;
     function onActivity(event: PointerEvent) {
-      if (event.pointerType === 'mouse') {
-        fullscreenActivity(event.target instanceof Node && !!overlay.current?.contains(event.target));
-      }
+      if (event.pointerType !== 'mouse' || !(event.target instanceof Node)) return;
+      if (!fullscreen && !preview.current?.contains(event.target)) return;
+      pointerActivity(!!overlay.current?.contains(event.target));
     }
     window.addEventListener('pointermove', onActivity, true);
     window.addEventListener('pointerdown', onActivity, true);
@@ -413,7 +405,7 @@ export function PdfSearch({ ref, children, fullscreen, pageComments, onToggleCom
       window.removeEventListener('pointermove', onActivity, true);
       window.removeEventListener('pointerdown', onActivity, true);
     };
-  }, [fullscreen, fullscreenActivity]);
+  }, [fullscreen, pointerActivity]);
 
   function startDrag(event: ReactPointerEvent<HTMLButtonElement>) {
     const panel = overlay.current;
@@ -440,19 +432,16 @@ export function PdfSearch({ ref, children, fullscreen, pageComments, onToggleCom
   function finishDrag(event: ReactPointerEvent<HTMLButtonElement>) {
     if (drag.current?.id !== event.pointerId) return;
     drag.current = undefined;
-    fullscreenActivity(!!overlay.current?.contains(document.elementFromPoint(event.clientX, event.clientY)));
+    pointerActivity(!!overlay.current?.contains(document.elementFromPoint(event.clientX, event.clientY)));
   }
 
   return <div className="preview" ref={preview} tabIndex={-1} data-fullscreen={fullscreen} onPointerDown={event => {
     if (optionsOpen && !optionsButton.current?.parentElement?.contains(event.target as Node)) setPopup(null);
-  }} onPointerMoveCapture={event => {
-    if (fullscreen || event.pointerType !== 'mouse') return;
-    const overPanel = !!overlay.current?.contains(event.target as Node);
-    const bounds = event.currentTarget.getBoundingClientRect();
-    updateHover(event.clientY < bounds.top + toolbarBottom.current || overPanel);
-  }} onPointerLeave={() => {
-    if (!fullscreen) updateHover(false);
-    else if (visible) fullscreenActivity(false);
+  }} onPointerLeave={event => {
+    if (event.pointerType !== 'mouse') return;
+    pointerOverToolbar.current = false;
+    clearVisibilityTimers();
+    if (visible && !pinned && !drag.current) resetHideTimer(true);
   }}>
     {children}
     <section className="search-overlay" ref={overlay} aria-label="PDF search and zoom"
@@ -522,10 +511,6 @@ export function PdfSearch({ ref, children, fullscreen, pageComments, onToggleCom
         title={pinned ? 'Unpin search panel' : 'Pin search panel'} onClick={() => {
           setPinned(!pinned);
           clearVisibilityTimers();
-          if (pinned && !hovered.current) {
-            if (fullscreen) fullscreenHide.current = window.setTimeout(hide, hideDelay);
-            else scheduleVisibility(false, false);
-          }
         }}><SearchIcon name="pin" /></button>
       <div className="search-results-anchor" id="pdf-search-matches" hidden={!resultsOpen}>
         <div className="search-results-menu">

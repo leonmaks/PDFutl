@@ -106,6 +106,7 @@ function prepare() {
   prepareEditorSplitFrames();
   preparePdfTimelinePresentation();
   preparePdfOpenTracking();
+  preparePdfOpenOrder();
   preparePdfPinnedFolders();
   preparePdfThemeName();
   preparePdfWindowZoom();
@@ -342,6 +343,22 @@ function preparePdfMenubar() {
     'const picks = documentWindow ? filePicks : [workspaceSeparator, ...workspacePicks, fileSeparator, ...filePicks];');
   patch(windowActions, 'activeItem: [...workspacePicks, ...filePicks][autoFocusSecondEntry ? 1 : 0],',
     'activeItem: documentWindow ? filePicks[0] : [...workspacePicks, ...filePicks][autoFocusSecondEntry ? 1 : 0],');
+}
+
+function preparePdfOpenOrder() {
+  patchCodeOssSource('workbench/browser/workbench.contribution.ts', source => source.replace(
+    /('workbench\.editor\.openPositioning': \{\s*'type': 'string',\s*'enum': \['left', 'right', 'first', 'last'\],\s*'default': )'right'/,
+    "$1'first'",
+  ));
+  patchCodeOssSource('workbench/browser/parts/editor/editor.ts', source =>
+    source.replace("openPositioning: 'right',", "openPositioning: 'first',"));
+  patchCodeOssSource('workbench/browser/parts/editor/editorGroupView.ts', source => source.replace(
+    'index: startingIndex + index',
+    `// Let the group model insert new PDFs at the start, also when opened together.
+				index: this.groupsView.partOptions.openPositioning === 'first' && editor.editorId === 'pdfutl.viewer'
+					? options?.index
+					: startingIndex + index`,
+  ));
 }
 
 function preparePdfThemeName() {
