@@ -89,7 +89,7 @@ export class PdfHistory implements vscode.TimelineProvider, vscode.Disposable {
       this.changed, watcher,
       watcher.onDidCreate(updateTimeline),
       watcher.onDidDelete(updateTimeline),
-      vscode.workspace.registerTimelineProvider(pdfTimelineSource, 'PDFUtl Activity', 'file', this),
+      vscode.workspace.registerTimelineProvider(pdfTimelineSource, 'PDFutl Activity', 'file', this),
     );
   }
 

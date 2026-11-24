@@ -12,7 +12,7 @@ import { defaultSettings, electronVersion, productDisplay, root } from './code-o
 const targets = {
   win32: {
     name: 'windows-x64',
-    binary: 'PDFUtl.exe',
+    binary: 'PDFutl.exe',
     format: 'zip',
     sha256: '2ba6223afa9121f42831fefe92c434334907540165294fc56697449d12e7cfe9',
   },
@@ -52,7 +52,7 @@ if (upstreamPkg.nativeBuild.target !== electronVersion) {
 }
 const product = await readJson(join(source, 'product.json'));
 const { getProductionDependencies } = await import(pathToFileURL(join(source, 'build', 'lib', 'dependencies.ts')));
-const releaseName = `PDFUtl-${manifest.version}-${target.name}`;
+const releaseName = `PDFutl-${manifest.version}-${target.name}`;
 await mkdir(output, { recursive: true });
 const staging = await mkdtemp(join(tmpdir(), 'pdfutl-package-'));
 try {
@@ -91,7 +91,7 @@ try {
     dataFolderName: '.pdfutl',
     sharedDataFolderName: '.pdfutl-shared',
     win32MutexName: 'pdfutl',
-    win32AppUserModelId: 'PDFUtl',
+    win32AppUserModelId: 'PDFutl',
     linuxDesktopName: 'pdfutl',
     urlProtocol: 'pdfutl',
     builtInExtensions: [],

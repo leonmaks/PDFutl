@@ -107,6 +107,7 @@ function prepare() {
   preparePdfTimelinePresentation();
   preparePdfOpenTracking();
   preparePdfPinnedFolders();
+  preparePdfThemeName();
   preparePdfWindowZoom();
   preparePdfFullscreen();
   patchCodeOssSource('workbench/contrib/customEditor/browser/customEditorInput.ts', source => {
@@ -158,7 +159,7 @@ function prepare() {
 					: localize('no-symbols', "No symbols found in document '{0}'", basename(resource)));`,
   ));
   patchCodeOssSource('workbench/browser/layout.ts', source => source
-    // Use a fresh visibility key because older PDFUtl builds always saved the sidebar as hidden.
+    // Use a fresh visibility key because older PDFutl builds always saved the sidebar as hidden.
     .replace("RuntimeStateKey<boolean>('sideBar.hidden'", "RuntimeStateKey<boolean>('pdfutl.navigator.hidden'")
     .replace('workbenchState === WorkbenchState.EMPTY || auxiliaryBarForceMaximized === true;', 'auxiliaryBarForceMaximized === true;')
     .replace(/^\t\tthis\.stateCache\.set\(LayoutStateKeys\.SIDEBAR_HIDDEN\.name, true\);\r?\n/m, '')
@@ -173,11 +174,11 @@ function prepare() {
       'const chord = new KeyCodeChord(ctrlKey, keyboardEvent.shiftKey, altKey, keyboardEvent.metaKey, keyboardEvent.keyCode);')
     .replace(/\/\/ Keep the navigator and PDF search shortcuts on physical keys in every Windows layout\.[\s\S]*?const chord = new KeyCodeChord\(ctrlKey, keyboardEvent.shiftKey, altKey, keyboardEvent.metaKey, keyCode\);/,
       'const chord = new KeyCodeChord(ctrlKey, keyboardEvent.shiftKey, altKey, keyboardEvent.metaKey, keyboardEvent.keyCode);')
-    .replace(/\/\/ Normalize the physical keys used by PDFUtl shortcuts in every Windows layout\.[\s\S]*?const chord = new KeyCodeChord\(ctrlKey, keyboardEvent.shiftKey, altKey, keyboardEvent.metaKey, keyCode\);/,
+    .replace(/\/\/ Normalize the physical keys used by PDF[Uu]tl shortcuts in every Windows layout\.[\s\S]*?const chord = new KeyCodeChord\(ctrlKey, keyboardEvent.shiftKey, altKey, keyboardEvent.metaKey, keyCode\);/,
       'const chord = new KeyCodeChord(ctrlKey, keyboardEvent.shiftKey, altKey, keyboardEvent.metaKey, keyboardEvent.keyCode);')
     .replace(
       'const chord = new KeyCodeChord(ctrlKey, keyboardEvent.shiftKey, altKey, keyboardEvent.metaKey, keyboardEvent.keyCode);',
-      `// Normalize the physical keys used by PDFUtl shortcuts in every Windows layout.
+      `// Normalize the physical keys used by PDFutl shortcuts in every Windows layout.
 		let keyCode = keyboardEvent.keyCode;
 		if (ctrlKey && !altKey && !keyboardEvent.metaKey && keyCode !== KeyCode.KEY_IN_COMPOSITION) {
 			if (keyboardEvent.shiftKey && keyboardEvent.code === 'KeyM') {
@@ -343,6 +344,23 @@ function preparePdfMenubar() {
     'activeItem: documentWindow ? filePicks[0] : [...workspacePicks, ...filePicks][autoFocusSecondEntry ? 1 : 0],');
 }
 
+function preparePdfThemeName() {
+  patchCodeOssSource('workbench/browser/workbench.contribution.ts', source => {
+    if (source.includes('migratePdfutlThemeName')) return source;
+    return `${source.trimEnd()}
+
+function migratePdfutlThemeName(value: unknown): ConfigurationKeyValuePairs {
+	return typeof value === 'string' && /^PDF[U]tl Darcula$/.test(value)
+		? [['workbench.colorTheme', { value: 'PDFutl Darcula' }]]
+		: [];
+}
+
+Registry.as<IConfigurationMigrationRegistry>(Extensions.ConfigurationMigration)
+	.registerConfigurationMigrations([{ key: 'workbench.colorTheme', migrateFn: migratePdfutlThemeName }]);
+`;
+  });
+}
+
 function preparePdfFullscreen() {
   const actionsDir = 'workbench/browser/actions';
   const implementation = readFileSync(join(root, 'workbench', 'pdfFullscreen.ts'));
@@ -351,8 +369,9 @@ function preparePdfFullscreen() {
 
   // A running development instance caches the list of CSS modules for new windows.
   const styles = readFileSync(join(root, 'workbench', 'pdfFullscreen.css'), 'utf8');
-  const marker = '\n/* PDFUtl fullscreen */\n';
-  patchCodeOssSource(`${actionsDir}/media/actions.css`, source => `${source.split(marker, 1)[0].trimEnd()}\n${marker}${styles}`);
+  const marker = '\n/* PDFutl fullscreen */\n';
+  patchCodeOssSource(`${actionsDir}/media/actions.css`, source =>
+    `${source.split(/\r?\n\/\* PDF[Uu]tl fullscreen \*\//, 1)[0].trimEnd()}\n${marker}${styles}`);
 
   patchCodeOssSource(`${actionsDir}/windowActions.ts`, source => {
     if (source.includes('togglePdfFullscreen')) return source;
@@ -365,10 +384,11 @@ function preparePdfFullscreen() {
 
 function preparePdfWindowZoom() {
   patchCodeOssSource('workbench/electron-browser/window.ts', source => {
-    if (source.includes('registerPdfUtlWheelZoom')) return source;
-    return source
+    const updated = source.replace(/registerPdf[Uu]tlWheelZoom/g, 'registerPdfutlWheelZoom');
+    if (updated.includes('registerPdfutlWheelZoom')) return updated;
+    return updated
       .replace('getWindowById, getWindows, $', 'getWindowById, getWindows, onDidRegisterWindow, $')
-      .replace('protected registerListeners(): void {', `private registerPdfUtlWheelZoom(target: Window) {
+      .replace('protected registerListeners(): void {', `private registerPdfutlWheelZoom(target: Window) {
 		return addDisposableListener(target, 'wheel', (event: WheelEvent) => {
 			if (!event.ctrlKey || event.altKey || event.metaKey || !event.deltaY) {
 				return;
@@ -380,9 +400,9 @@ function preparePdfWindowZoom() {
 	}
 
 	protected registerListeners(): void {
-		this._register(this.registerPdfUtlWheelZoom(mainWindow));
+		this._register(this.registerPdfutlWheelZoom(mainWindow));
 		this._register(onDidRegisterWindow(({ window, disposables }) => {
-			disposables.add(this.registerPdfUtlWheelZoom(window));
+			disposables.add(this.registerPdfutlWheelZoom(window));
 		}));`);
   });
   patchCodeOssSource('workbench/contrib/webview/browser/webviewElement.ts', source => {
@@ -508,7 +528,7 @@ function restoreSidebarActions() {
     if (source.includes('registerAction2(ToggleSidebarVisibilityAction);')) return source;
     const original = spawnSync('git', ['show', `HEAD:src/vs/${file}`], { cwd: codeOss, encoding: 'utf8' });
     if (original.status !== 0) throw new Error(`Could not restore native sidebar actions: ${original.stderr}`);
-    // Restore only the icons and actions that previous PDFUtl builds removed.
+    // Restore only the icons and actions that previous PDFutl builds removed.
     const iconLines = original.stdout.match(/^const panel(?:Left|Right)OffIcon = [^\r\n]*/gm);
     const registrations = original.stdout.match(/registerAction2\(ToggleSidebarVisibilityAction\);\r?\n\r?\nMenuRegistry\.appendMenuItems\(\[[\s\S]*?\r?\n\]\);/);
     const toggle = original.stdout.match(/^\tCreateToggleLayoutItem\(ToggleSidebarVisibilityAction\.ID,[^\r\n]*/m);

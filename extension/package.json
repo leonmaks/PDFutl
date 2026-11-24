@@ -9,10 +9,10 @@
   "capabilities": { "untrustedWorkspaces": { "supported": true } },
   "contributes": {
     "themes": [
-      { "id": "PDFUtl Darcula", "label": "Darcula", "uiTheme": "vs-dark", "path": "./dist/themes/darcula.json" }
+      { "id": "PDFutl Darcula", "label": "Darcula", "uiTheme": "vs-dark", "path": "./dist/themes/darcula.json" }
     ],
     "configurationDefaults": {
-      "workbench.colorTheme": "PDFUtl Darcula"
+      "workbench.colorTheme": "PDFutl Darcula"
     },
     "commands": [
       { "command": "pdfutl.find", "title": "Find in PDF" },

@@ -15,7 +15,7 @@ const pinnedFolder = dirname(files[0]);
 const archiveFolder = join(run, 'Archive');
 const copyPath = join(run, 'review-copy.pdf');
 const revisedComment = 'Second annotation version';
-const profileComment = 'Saved only in the PDFUtl profile';
+const profileComment = 'Saved only in the PDFutl profile';
 const originalProfileComment = 'Draft from the annotation card';
 const currentUser = userInfo().username;
 const viewerOnly = process.argv.includes('--viewer');
@@ -346,7 +346,7 @@ async function verifyDarcula(workbench, pdf) {
     document.body.dataset.vscodeThemeId,
     getComputedStyle(document.documentElement).backgroundColor,
     getComputedStyle(document.querySelector('.page-paper')).backgroundColor,
-  ]), ['PDFUtl Darcula', 'rgb(36, 36, 36)', 'rgb(255, 255, 255)']);
+  ]), ['PDFutl Darcula', 'rgb(36, 36, 36)', 'rgb(255, 255, 255)']);
   console.log('Darcula is the default for the workbench and PDF chrome, with the original PDF paper color');
 }
 

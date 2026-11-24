@@ -163,7 +163,7 @@ class PdfViewer implements vscode.CustomReadonlyEditorProvider {
               annotations = await this.history.readAnnotations(document.uri, revision);
             } catch (error) {
               console.error('PDF annotation restore:', error);
-              void vscode.window.showWarningMessage('Could not read annotations saved in the PDFUtl profile.');
+              void vscode.window.showWarningMessage('Could not read annotations saved in the PDFutl profile.');
             }
             await post({ type: 'open', name, bytes: Uint8Array.from(bytes).buffer, user: this.history.user, ...annotations });
             break;
@@ -201,7 +201,7 @@ class PdfViewer implements vscode.CustomReadonlyEditorProvider {
               }
             } catch (error) {
               console.error('PDF annotation save:', error);
-              await post({ type: 'annotationSaveResult', id: message.id, error: 'Could not save this change in the PDFUtl profile.' });
+              await post({ type: 'annotationSaveResult', id: message.id, error: 'Could not save this change in the PDFutl profile.' });
               break;
             }
             await post({ type: 'annotationSaveResult', id: message.id });
